@@ -39,13 +39,19 @@ app.use(rateLimiter);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+let isDbConnected = false;
+mongoose.connection.on('connected', () => { isDbConnected = true; console.log('✅ Mongo connected'); });
+mongoose.connection.on('error', (err) => { isDbConnected = false; console.error('❌ Mongo error:', err); });
+mongoose.connection.on('disconnected', () => { isDbConnected = false; console.warn('⚠️ Mongo disconnected'); });
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'OK',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    dbConnected: isDbConnected,
   });
 });
 
@@ -112,37 +118,31 @@ app.use('*', (req, res) => {
 // Error handling middleware
 app.use(errorHandler);
 
-// Database connection
+// Database connection (non-blocking)
 const connectDB = async () => {
+  const mongoURI = process.env.MONGODB_URI;
+  if (!mongoURI) {
+    console.warn('⚠️ MONGODB_URI not set. Server will start without DB connection.');
+    return;
+  }
   try {
-    const mongoURI = process.env.MONGODB_URI || 'mongodb://localhost:27017/zillow-assistant';
-    await mongoose.connect(mongoURI);
-    console.log('✅ Connected to MongoDB');
+    await mongoose.connect(mongoURI, { serverSelectionTimeoutMS: 10000 });
   } catch (error) {
-    console.error('❌ MongoDB connection error:', error);
-    process.exit(1);
+    console.error('❌ MongoDB connection error:', error?.message || error);
+    // Do not exit; keep API up for health/config endpoints
   }
 };
 
-// Start server
-const startServer = async () => {
-  try {
-    await connectDB();
-    
-    app.listen(PORT, () => {
-      console.log(`🚀 Zillow Assistant Backend running on port ${PORT}`);
-      console.log(`📋 Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`🔗 Health check: http://localhost:${PORT}/health`);
-      if (process.env.NODE_ENV === 'development') {
-        console.log(`📚 API docs: http://localhost:${PORT}/api/docs`);
-      }
-    });
-  } catch (error) {
-    console.error('❌ Failed to start server:', error);
-    process.exit(1);
+// Start server immediately; connect to DB in background
+app.listen(PORT, () => {
+  console.log(`🚀 Zillow Assistant Backend running on port ${PORT}`);
+  console.log(`📋 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`📚 API docs: http://localhost:${PORT}/api/docs`);
   }
-};
+});
 
-startServer();
+connectDB();
 
 export default app;
