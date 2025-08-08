@@ -24,12 +24,13 @@ const PORT = process.env.PORT || 3001;
 
 // Security middleware
 app.use(helmet());
-app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? ['https://your-frontend-domain.com'] 
-    : ['http://localhost:3000', 'http://localhost:5173'],
-  credentials: true
-}));
+const allowedOrigins = (() => {
+  const fromEnv = (process.env.CORS_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (fromEnv.length) return fromEnv;
+  if (process.env.NODE_ENV === 'production') return ['https://your-frontend-domain.com'];
+  return ['http://localhost:3000', 'http://localhost:5173'];
+})();
+app.use(cors({ origin: allowedOrigins, credentials: true }));
 
 // Rate limiting
 app.use(rateLimiter);
