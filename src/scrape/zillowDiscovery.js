@@ -1,14 +1,64 @@
 import { launchBrowser } from './chrome.js';
 
+// --- Helpers ported from TS spec ---
+function cityToSlug(city) {
+  return String(city || '')
+    .trim()
+    .replace(/\s*,\s*/g, '-')
+    .replace(/\s+/g, '-');
+}
+
+function isZillowSRPJsonUrl(u) {
+  return /GetSearchPageState|searchresults|search-page|SearchPageState/i.test(u);
+}
+
+async function dismissOverlays(page) {
+  const sels = [
+    '#onetrust-accept-btn-handler',
+    '[data-testid="close"], [aria-label="Close"], button[aria-label="Close"]',
+    '[data-testid="modal-close"]',
+  ];
+  for (const sel of sels) {
+    try {
+      const el = await page.$(sel);
+      if (el) await el.click().catch(() => {});
+    } catch {}
+  }
+}
+
+function extractFromCat(cat) {
+  const out = [];
+  const arr = (cat?.searchResults?.listResults) || (cat?.searchResults?.results) || [];
+  for (const it of arr) {
+    try {
+      const zpid = it?.zpid ?? it?.id ?? it?.hdpData?.homeInfo?.zpid;
+      let url = it?.detailUrl || it?.hdpUrl || it?.hdpData?.homeInfo?.hdpUrl || it?.url || '';
+      if (url && url.startsWith('/')) url = 'https://www.zillow.com' + url;
+      if (!url || !/zillow\.com\/.*(homedetails|_zpid)/i.test(url)) continue;
+      const address = it?.address || it?.addressStreet || it?.hdpData?.homeInfo?.streetAddress || it?.statusText || undefined;
+      const price = it?.price || it?.unformattedPrice || it?.hdpData?.homeInfo?.price || it?.units?.[0]?.price || undefined;
+      const beds = it?.beds ?? it?.hdpData?.homeInfo?.bedrooms ?? it?.units?.[0]?.beds ?? undefined;
+      const baths = it?.baths ?? it?.hdpData?.homeInfo?.bathrooms ?? it?.units?.[0]?.baths ?? undefined;
+      const lat = it?.latLong?.latitude ?? it?.hdpData?.homeInfo?.latitude;
+      const lng = it?.latLong?.longitude ?? it?.hdpData?.homeInfo?.longitude;
+      const badgeOwner = !!it?.isFsbo || !!it?.isFrbo ||
+        (Array.isArray(it?.badges) && it.badges.some(b => /owner|frbo|fsbo/i.test(String(b?.text ?? b)))) ||
+        /for rent by owner/i.test(String(it?.variableData?.type ?? '')) || false;
+      out.push({ zpid, url, address, price, beds, baths, lat, lng, badgeOwner });
+    } catch {}
+  }
+  return out;
+}
+
 function buildCitySlug(city) {
   return String(city).trim().replace(/\s+/g, '-').replace(/,+/g, '');
 }
 
 // Network-response capture implementation
 export async function discoverListings({ city, mode = 'rent' }) {
-  const slug = buildCitySlug(city || 'Austin, TX');
+  const slug = cityToSlug(city || 'Austin, TX');
   const srps = mode === 'rent'
-    ? [`https://www.zillow.com/${slug}/rent-houses/`, `https://www.zillow.com/${slug}/rentals/`]
+    ? [`https://www.zillow.com/${slug}/rent-houses/`, `https://www.zillow.com/${slug}/rentals/`, `https://www.zillow.com/${slug}/`]
     : [`https://www.zillow.com/${slug}/homes/`];
 
   const browser = await launchBrowser();
@@ -28,7 +78,7 @@ export async function discoverListings({ city, mode = 'rent' }) {
         const u = res.url();
         const rt = res.request().resourceType();
         if (rt !== 'xhr' && rt !== 'fetch') return;
-        if (!/GetSearchPageState|searchPageState|searchResults|listResults|search-page/i.test(u)) return;
+        if (!isZillowSRPJsonUrl(u)) return;
         const txt = await res.text(); if (!txt) return;
         let json = null; try { json = JSON.parse(txt); } catch {}
         if (!json && txt.includes('{')) {
@@ -64,45 +114,18 @@ export async function discoverListings({ city, mode = 'rent' }) {
       'categorySearchResults',
     ];
     for (const c of captured) {
-      for (const p of paths) {
-        const v = gp(c.json, p);
-        if (Array.isArray(v)) {
-          for (const it of v) {
-            try {
-              const href = it.detailUrl ?? it.hdpUrl ?? it.url ?? '';
-              const abs = href.startsWith('http') ? href : `https://www.zillow.com${href}`;
-              if (!abs) continue;
-              const info = it.hdpData?.homeInfo ?? {};
-              const price = it.unformattedPrice ?? info?.price ?? it.price ?? null;
-              const beds = it.beds ?? info.bedrooms ?? null;
-              const baths = it.baths ?? info.bathrooms ?? null;
-              const lat = info?.latLong?.latitude ?? it.latLong?.latitude ?? null;
-              const lng = info?.latLong?.longitude ?? it.latLong?.longitude ?? null;
-              const badgeOwner = !!it.isFrbo || !!it.isFsbo || (Array.isArray(it.badges) && it.badges.some(b=>/owner|frbo|fsbo/i.test(JSON.stringify(b)))) || /owner|frbo|fsbo/i.test(String(it.listingProviderType||''));
-              listings.push({ zpid: it.zpid ?? info.zpid ?? null, url: abs.split('?')[0], address: it.address ?? info.streetAddress ?? null, price, beds, baths, lat, lng, badgeOwner, ownerName: null });
-            } catch {}
-          }
-        } else if (p === 'categorySearchResults' && Array.isArray(v)) {
-          for (const cat of v) {
-            if (Array.isArray(cat?.listResults)) {
-              for (const it of cat.listResults) {
-                try {
-                  const href = it.detailUrl ?? it.hdpUrl ?? it.url ?? '';
-                  const abs = href.startsWith('http') ? href : `https://www.zillow.com${href}`;
-                  if (!abs) continue;
-                  const info = it.hdpData?.homeInfo ?? {};
-                  const price = it.unformattedPrice ?? info?.price ?? it.price ?? null;
-                  const beds = it.beds ?? info.bedrooms ?? null;
-                  const baths = it.baths ?? info.bathrooms ?? null;
-                  const lat = info?.latLong?.latitude ?? it.latLong?.latitude ?? null;
-                  const lng = info?.latLong?.longitude ?? it.latLong?.longitude ?? null;
-                  const badgeOwner = !!it.isFrbo || !!it.isFsbo || (Array.isArray(it.badges) && it.badges.some(b=>/owner|frbo|fsbo/i.test(JSON.stringify(b)))) || /owner|frbo|fsbo/i.test(String(it.listingProviderType||''));
-                  listings.push({ zpid: it.zpid ?? info.zpid ?? null, url: abs.split('?')[0], address: it.address ?? info.streetAddress ?? null, price, beds, baths, lat, lng, badgeOwner, ownerName: null });
-                } catch {}
-              }
-            }
-          }
-        }
+      const json = c.json;
+      const cats = [
+        json?.cat1,
+        json?.cat2,
+        json?.cat3,
+        json?.props?.pageProps?.searchPageState?.cat1,
+        json?.searchPageState?.cat1,
+        json?.searchResults ? { searchResults: json.searchResults } : null,
+      ].filter(Boolean);
+      for (const cat of cats) {
+        const got = extractFromCat(cat);
+        for (const g of got) listings.push(g);
       }
     }
 
