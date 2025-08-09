@@ -65,6 +65,25 @@ async function doScrolls(page, times = 6, range = [1000, 1800]) {
   }
 }
 
+// Dismiss cookie/consent/sign-in overlays on Zillow
+async function zillowDismissOverlays(page) {
+  const sels = [
+    'button:has-text("Accept")',
+    'button:has-text("I agree")',
+    'button[aria-label*="accept"]',
+    '[data-test="privacy-accept"]',
+    'button[aria-label*="close"]',
+    '[data-test="close"]',
+    '[data-testid="close"]',
+  ];
+  for (const sel of sels) {
+    try {
+      const el = await page.$(sel);
+      if (el) { await el.click({ delay: 50 }); await page.waitForTimeout(400); }
+    } catch {}
+  }
+}
+
 // DuckDuckGo HTML endpoint parsing (no JS)
 function extractZillowLinksFromDDGHtml(html) {
   const links = [];
@@ -263,6 +282,19 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     console.log('SCRAPER zillow navigation complete');
     // Safety delay for client-side routing to settle
     try { await page.waitForTimeout(1500); } catch {}
+    try { await zillowDismissOverlays(page); console.log('SCRAPER overlays dismissed'); } catch {}
+    // Force List view if present
+    try {
+      const clicked = await page.evaluate(() => {
+        const bs = Array.from(document.querySelectorAll('button'));
+        const b = bs.find(x => (x.innerText||'').trim().toLowerCase()==='list');
+        if (b) { b.click(); return true; }
+        const byData = document.querySelector('[data-test="list-button"]');
+        if (byData) { (byData).click(); return true; }
+        return false;
+      });
+      if (clicked) { await page.waitForTimeout(1200); }
+    } catch {}
     console.log('SCRAPER zillow click ok');
     try { const loc = await page.evaluate(() => ({ host: location.host, path: location.pathname })); console.log(`SCRAPER zillow host=${loc.host} path=${loc.path}`); } catch {}
     totalT.mark('Zillow landing');
@@ -312,23 +344,73 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     jMark.mark('JSON harvest done');
 
     let links = [];
+    let jsonLiveLinks = [];
     if (jsonCount) {
       links = jsonLinks.map(u => u.startsWith('http') ? u : `https://www.zillow.com${u}`);
     } else {
-      // DOM harvest for candidates (fallback)
-      const dMark = makeTimer();
-      try { await page.waitForFunction((sel) => document.querySelectorAll(sel).length > 0, { timeout: 20000 }, cardsSel); } catch {}
-      try { await doScrolls(page, 8, [1000,1800]); } catch {}
+      // Live JSON capture (~10s) for GetSearchPageState/searchResults
+      const netLinks = new Set();
+      const onResp = async (res) => {
+        try {
+          const url = res.url();
+          if (!/zillow\.com/i.test(url)) return;
+          if (!/GetSearchPageState|search|graphql|listResults|searchResults/i.test(url)) return;
+          const ct = (res.headers()['content-type']||'').toLowerCase();
+          if (!ct.includes('json')) return;
+          const text = await res.text(); if (!text) return;
+          let data; try { data = JSON.parse(text); } catch { return; }
+          (function walk(o){
+            try { if (!o) return; if (typeof o === 'string') { if (o.includes('/homedetails/')) netLinks.add((o.startsWith('http')?o:'https://www.zillow.com'+(o.startsWith('/')?o:'/'+o)).split('?')[0]); return; } if (Array.isArray(o)) { for (const v of o) walk(v); return; } if (typeof o === 'object') { for (const k in o) walk(o[k]); } } catch {} }
+          )(data);
+        } catch {}
+      };
+      try { page.on('response', onResp); } catch {}
       try {
-        links = await page.$$eval('a[data-test="property-card-link"], a.property-card-link, [data-test="search-list-content"] a[href*="/homedetails/"], ul.photo-cards li article a[href*="/homedetails/"], a[href*="/homedetails/"][tabindex]', els => Array.from(new Set(els.map(a => (a instanceof HTMLAnchorElement ? a.href : a.getAttribute('href'))).filter(Boolean))));
+        await page.evaluate(async () => {
+          const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
+          const candidates = ['[data-test="search-list-content"]','div[role="list"]','ul.photo-cards','div[aria-label*="List"]'];
+          let scroller = null; for (const sel of candidates) { const el = document.querySelector(sel); if (el) { scroller = el; break; } }
+          if (!scroller) scroller = document.scrollingElement || document.body;
+          for (let i=0;i<10;i++){ scroller.scrollBy(0, scroller.clientHeight); await sleep(900 + Math.floor(Math.random()*700)); }
+        });
+        await page.waitForTimeout(2000);
       } catch {}
-      // Very last fallback
+      try { page.off('response', onResp); } catch {}
+      jsonLiveLinks = Array.from(netLinks).slice(0, 100);
+      console.log('PHASE.JSON_LIVE links=', jsonLiveLinks.length);
+
+      if (jsonLiveLinks.length) {
+        links = jsonLiveLinks;
+      } else {
+        // DOM fallback after forcing list container scroll
+        const dMark = makeTimer();
+        try {
+          await page.evaluate(async () => {
+            const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
+            const candidates = ['[data-test="search-list-content"]','div[role="list"]','ul.photo-cards','div[aria-label*="List"]'];
+            let scroller = null; for (const sel of candidates) { const el = document.querySelector(sel); if (el) { scroller = el; break; } }
+            if (!scroller) scroller = document.scrollingElement || document.body;
+            for (let i=0;i<10;i++){ scroller.scrollBy(0, scroller.clientHeight); await sleep(900 + Math.floor(Math.random()*700)); }
+          });
+        } catch {}
+        try {
+          links = await page.$$eval('a[data-test="property-card-link"], a.property-card-link, [data-test="search-list-content"] a[href*="/homedetails/"], ul.photo-cards li article a[href*="/homedetails/"], a[href*="/homedetails/"][tabindex], article a[href*="/homedetails/"]', els => Array.from(new Set(els.map(a => (a instanceof HTMLAnchorElement ? a.href : a.getAttribute('href'))).filter(Boolean))));
+        } catch {}
+        console.log('SCRAPER grid domLinks=', Array.isArray(links)?links.length:0);
+        dMark.mark('DOM harvest done');
+      }
+    }
+    if (Array.isArray(links)) links = links.slice(0, 50);
+    // If still 0, last resort DDG homedetails-only
+    let ddgHomedetailsLinks = [];
+    if (!links.length) {
       try {
-        const more = await page.$$eval('a[href*="/homedetails/"]', els => Array.from(new Set(els.map(a => (a instanceof HTMLAnchorElement ? a.href : a.getAttribute('href'))).filter(Boolean))));
-        links = Array.from(new Set([...(links||[]), ...(more||[])]));
+        const onlyQ = `site:zillow.com/homedetails ${cityOrZip} for rent by owner`;
+        const list = await ddgHtmlTry(page, onlyQ);
+        ddgHomedetailsLinks = list.filter(u=>/\/homedetails\//i.test(u)).slice(0,10);
+        console.log('PHASE.DDG_HTML homedetails_only links=', ddgHomedetailsLinks.length);
+        links = ddgHomedetailsLinks;
       } catch {}
-      console.log('PHASE.DOM links=', Array.isArray(links)?links.length:0);
-      dMark.mark('DOM harvest done');
     }
     if (Array.isArray(links)) links = links.slice(0, 50);
 
