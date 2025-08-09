@@ -24,13 +24,39 @@ const PORT = process.env.PORT || 3001;
 
 // Security middleware
 app.use(helmet());
-const allowedOrigins = (() => {
-  const fromEnv = (process.env.CORS_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean);
-  if (fromEnv.length) return fromEnv;
-  if (process.env.NODE_ENV === 'production') return ['https://your-frontend-domain.com'];
+const parseOriginPatterns = () => {
+  const raw = (process.env.CORS_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (raw.length) return raw;
+  if (process.env.NODE_ENV === 'production') return ['https://*.vercel.app'];
   return ['http://localhost:3000', 'http://localhost:5173'];
-})();
-app.use(cors({ origin: allowedOrigins, credentials: true }));
+};
+
+const originPatterns = parseOriginPatterns();
+const isOriginAllowed = (origin) => {
+  if (!origin) return true; // non-browser or same-origin
+  for (const patt of originPatterns) {
+    if (patt.includes('*')) {
+      const re = new RegExp('^' + patt.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
+      if (re.test(origin)) return true;
+    } else {
+      if (origin === patt) return true;
+    }
+  }
+  return false;
+};
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (isOriginAllowed(origin)) return callback(null, true);
+    return callback(new Error(`CORS blocked origin: ${origin}`));
+  },
+  credentials: true,
+  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 // Rate limiting
 app.use(rateLimiter);
