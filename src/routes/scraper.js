@@ -106,15 +106,18 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     console.log('SCRAPER zillow click ok');
     const cardsSel = 'a[data-test="property-card-link"], a.property-card-link, ul.photo-cards li article a[href*="/homedetails/"]';
     try {
-      await page.waitForFunction((sel) => document.querySelectorAll(sel).length > 0, { timeout: 25000 }, cardsSel);
+      await page.waitForSelector(cardsSel, { timeout: 15000 });
       console.log('SCRAPER page ready');
     } catch {
       console.warn('SCRAPER warn selectors-empty (no cards yet)');
     }
-    await sleep(400 + Math.random()*900);
-    for (let i = 0; i < 3; i++) { await page.evaluate(() => { window.scrollBy(0, 1000); }); await sleep(400 + Math.random()*900); }
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(() => { window.scrollBy(0, window.innerHeight); });
+      await sleep(1500);
+    }
     try { const count = await page.$$eval(cardsSel, els => els.length); console.log(`SCRAPER cards found=${count}`); } catch {}
     let rows = await extractListings(page);
+    try { console.log(`SCRAPER cards found(after extract)=${rows.length}`); } catch {}
     const { minBedrooms, maxPrice } = filters || {};
     rows = rows.filter(r => {
       if (minBedrooms && r.bedrooms && r.bedrooms < Number(minBedrooms)) return false;
