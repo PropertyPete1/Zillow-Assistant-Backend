@@ -464,30 +464,12 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
       try { page.off('response', onResp); } catch {}
       jsonLiveLinks = Array.from(netLinks).slice(0, 100);
       console.log('PHASE.JSON_LIVE links=', jsonLiveLinks.length);
-
       if (jsonLiveLinks.length) {
         links = jsonLiveLinks;
-      } else {
-        // DOM fallback after forcing list container scroll
-        const dMark = makeTimer();
-        try {
-          await page.evaluate(async () => {
-            const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
-            const candidates = ['[data-test="search-list-content"]','div[role="list"]','ul.photo-cards','div[aria-label*="List"]'];
-            let scroller = null; for (const sel of candidates) { const el = document.querySelector(sel); if (el) { scroller = el; break; } }
-            if (!scroller) scroller = document.scrollingElement || document.body;
-            for (let i=0;i<10;i++){ scroller.scrollBy(0, scroller.clientHeight); await sleep(900 + Math.floor(Math.random()*700)); }
-          });
-        } catch {}
-        try {
-          links = await page.$$eval('a[data-test="property-card-link"], a.property-card-link, [data-test="search-list-content"] a[href*="/homedetails/"], ul.photo-cards li article a[href*="/homedetails/"], a[href*="/homedetails/"][tabindex], article a[href*="/homedetails/"]', els => Array.from(new Set(els.map(a => (a instanceof HTMLAnchorElement ? a.href : a.getAttribute('href'))).filter(Boolean))));
-        } catch {}
-        console.log('SCRAPER grid domLinks=', Array.isArray(links)?links.length:0);
-        dMark.mark('DOM harvest done');
       }
     }
     if (Array.isArray(links)) links = links.slice(0, 50);
-    // If still 0, last resort DDG homedetails-only
+    // If still 0, last resort DDG homedetails-only (skip DOM grid entirely)
     let ddgHomedetailsLinks = [];
     if (!links.length) {
       try {
@@ -497,6 +479,10 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
         console.log('PHASE.DDG_HTML homedetails_only links=', ddgHomedetailsLinks.length);
         links = ddgHomedetailsLinks;
       } catch {}
+    }
+    if (!links.length) {
+      const meta = { timings: { ddg_ms: ddgT.elapsed(), json_ms: jMark.elapsed(), dom_ms: 0, detail_ms: 0, total_ms: totalT.elapsed() }, jsonCount, domCount: 0, candidateCount: 0, znext: { roots: znextRoots, paths: znextPaths, samples: znextSamples } };
+      return { listings: [], warning: jsonCount? 'no-candidates' : 'no-next-data', durationMs: Date.now()-start, meta };
     }
     if (Array.isArray(links)) links = links.slice(0, 50);
 
