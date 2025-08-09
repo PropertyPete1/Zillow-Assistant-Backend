@@ -61,9 +61,9 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters }) {
       const execPath = await chromium.executablePath();
       Object.assign(launchOptions, { executablePath: execPath, defaultViewport: chromium.defaultViewport });
     }
-    const { stealth } = await import('puppeteer-extra-plugin-stealth');
+    const StealthPlugin = (await import('puppeteer-extra-plugin-stealth')).default;
     const puppeteerExtra = (await import('puppeteer-extra')).default;
-    puppeteerExtra.use(stealth());
+    puppeteerExtra.use(StealthPlugin());
     browser = await puppeteerExtra.launch(launchOptions);
     const page = await browser.newPage();
     await page.setUserAgent(`Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${Math.floor(120+Math.random()*5)}.0.0.0 Safari/537.36`);
