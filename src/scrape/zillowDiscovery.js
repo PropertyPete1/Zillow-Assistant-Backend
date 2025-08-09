@@ -1,4 +1,6 @@
-import { launchBrowser } from './chrome.js';
+import chromium from '@sparticuz/chromium';
+import puppeteerExtra from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 
 // --- Helpers ported from TS spec ---
 function cityToSlug(city) {
@@ -55,37 +57,20 @@ function buildCitySlug(city) {
 }
 
 // Network-response capture implementation
+puppeteerExtra.use(StealthPlugin());
+
 export async function discoverListings({ city, mode = 'rent', srpUrl = null }) {
   const slug = cityToSlug(city || 'Austin, TX');
   const srps = srpUrl ? [srpUrl] : (mode === 'rent'
     ? [`https://www.zillow.com/${slug}/rent-houses/`, `https://www.zillow.com/${slug}/rentals/`, `https://www.zillow.com/${slug}/`]
     : [`https://www.zillow.com/${slug}/homes/`] );
 
-  // Robust launch with lock and ETXTBSY workaround
-  const { default: fs } = await import('node:fs/promises');
-  const { default: path } = await import('node:path');
-  let launchLock = Promise.resolve();
-  async function withLaunchLock(fn){ let release; const prev=launchLock; launchLock=new Promise(res=>release=res); await prev; try{ return await fn(); } finally{ release(); } }
-  async function prepareExecutable(execPath){ const tmp=`/tmp/chromium-${Date.now()}-${Math.floor(Math.random()*1e6)}`; await fs.copyFile(execPath, tmp); await fs.chmod(tmp, 0o755); return tmp; }
-
-  const { launchBrowser: baseLaunch } = await import('./chrome.js');
-  const { default: chromium } = await import('@sparticuz/chromium');
-  const { default: puppeteer } = await import('puppeteer-core');
-  const execPath0 = await chromium.executablePath();
-  const browser = await withLaunchLock(async () => {
-    let lastErr;
-    for (let t=1; t<=3; t++) {
-      try {
-        const execPath = await prepareExecutable(execPath0);
-        return await puppeteer.launch({
-          headless: true,
-          executablePath: execPath,
-          args: [...chromium.args, '--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu'],
-          defaultViewport: { width: 1360, height: 900 },
-        });
-      } catch (e) { lastErr = e; await new Promise(r=>setTimeout(r, 1200*t)); }
-    }
-    throw lastErr;
+  const execPath = await chromium.executablePath();
+  const browser = await puppeteerExtra.launch({
+    headless: true,
+    executablePath: execPath,
+    args: [...chromium.args, '--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu'],
+    defaultViewport: { width: 1360, height: 900 },
   });
   const page = await browser.newPage();
   try {
