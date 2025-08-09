@@ -84,6 +84,39 @@ async function zillowDismissOverlays(page) {
   }
 }
 
+// Robust Chromium launch with retries and health check
+async function launchBrowser(puppeteer, chromium) {
+  const opts = {
+    executablePath: chromium ? await chromium.executablePath() : undefined,
+    headless: chromium ? (chromium.headless !== false) : true,
+    args: [
+      ...((chromium && chromium.args) || []),
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--single-process',
+      '--no-zygote',
+      '--window-size=1366,768',
+    ],
+    ignoreHTTPSErrors: true,
+    defaultViewport: (chromium && chromium.defaultViewport) || { width: 1366, height: 768 },
+    protocolTimeout: 120000,
+  };
+  for (let i = 0; i < 2; i++) {
+    try {
+      const browser = await puppeteer.launch(opts);
+      const page = await browser.newPage();
+      await page.goto('about:blank');
+      await page.close();
+      return browser;
+    } catch (e) {
+      console.warn('LAUNCH error', e?.message || String(e));
+      if (i === 1) throw e;
+      await sleep(1500);
+    }
+  }
+}
+
 // DuckDuckGo HTML endpoint parsing (no JS)
 function extractZillowLinksFromDDGHtml(html) {
   const links = [];
@@ -156,6 +189,12 @@ async function getZillowLandingUrl(page, queries, cityOrZip) {
       return list[0];
     }
   }
+  // One more normal retry with first query
+  try {
+    const list = await ddgNormalTry(page, queries[0]);
+    console.log('PHASE.DDG_NORMAL retry links=', list.length);
+    if (list.length) return list[0];
+  } catch {}
   // Fallback direct Zillow city/zip browse
   const fallback = `https://www.zillow.com/homes/${encodeURIComponent(String(cityOrZip).replace(/\s+/g, '-'))}_rb/`;
   console.log(`SCRAPER ddg fallback="${fallback}"`);
@@ -240,18 +279,7 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
   let browser;
   try {
     let launchOptions;
-    if (chromium) {
-      const execPath = await chromium.executablePath();
-      launchOptions = {
-        args: [...(chromium.args || []), ...extraFlags],
-        defaultViewport: chromium.defaultViewport,
-        executablePath: execPath,
-        headless: chromium.headless,
-      };
-    } else {
-      launchOptions = { headless: true, args: extraFlags };
-    }
-    browser = await puppeteer.launch(launchOptions);
+    browser = await launchBrowser(puppeteer, chromium);
     const page = await browser.newPage();
     try { page.setDefaultNavigationTimeout(60000); } catch {}
     try { page.setDefaultTimeout(60000); } catch {}
