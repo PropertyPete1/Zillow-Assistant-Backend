@@ -59,13 +59,20 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters }) {
   const start = Date.now();
   // eslint-disable-next-line no-console
   console.log(`SCRAPER start propertyType=${propertyType} zip=${zip}`);
-  const args = ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--single-process','--no-zygote'];
+  const extraFlags = ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--single-process','--no-zygote'];
   let browser;
   try {
-    const launchOptions = { headless: 'new', args };
+    let launchOptions;
     if (chromium) {
       const execPath = await chromium.executablePath();
-      Object.assign(launchOptions, { executablePath: execPath, defaultViewport: chromium.defaultViewport });
+      launchOptions = {
+        args: [...(chromium.args || []), ...extraFlags],
+        defaultViewport: chromium.defaultViewport,
+        executablePath: execPath,
+        headless: chromium.headless,
+      };
+    } else {
+      launchOptions = { headless: true, args: extraFlags };
     }
     browser = await puppeteer.launch(launchOptions);
     const page = await browser.newPage();
@@ -74,12 +81,12 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters }) {
 
     const query = buildQuery(propertyType, zip);
     console.log(`SCRAPER ddg query="${query}"`);
-    await page.goto('https://duckduckgo.com/', { timeout: 20000, waitUntil: 'domcontentloaded' });
+    await page.goto('https://duckduckgo.com/', { timeout: 25000, waitUntil: 'networkidle2' });
     await sleep(300 + Math.random()*700);
     await page.type('input[name="q"]', query, { delay: 50 + Math.random()*40 });
     await Promise.all([
       page.keyboard.press('Enter'),
-      page.waitForNavigation({ timeout: 20000, waitUntil: 'domcontentloaded' })
+      page.waitForNavigation({ timeout: 25000, waitUntil: 'networkidle2' })
     ]);
     await sleep(300 + Math.random()*700);
     const linkHandle = await page.$('a.result__a[href*="zillow.com"]') || await page.$('a[href*="zillow.com/"]');
@@ -89,17 +96,19 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters }) {
     }
     await Promise.all([
       linkHandle.click({ delay: 50 + Math.random()*50 }),
-      page.waitForNavigation({ timeout: 20000, waitUntil: 'domcontentloaded' })
+      page.waitForNavigation({ timeout: 30000, waitUntil: 'networkidle2' })
     ]);
     console.log('SCRAPER zillow click ok');
+    const cardsSel = 'a[data-test="property-card-link"], a.property-card-link, ul.photo-cards li article a[href*="/homedetails/"]';
     try {
-      await page.waitForSelector('a[data-test="property-card-link"], article a[href*="/homedetails/"]', { timeout: 15000 });
+      await page.waitForFunction((sel) => document.querySelectorAll(sel).length > 0, { timeout: 25000 }, cardsSel);
+      console.log('SCRAPER page ready');
     } catch {
-      console.warn('SCRAPER warning: cards selector not found');
+      console.warn('SCRAPER warn selectors-empty (no cards yet)');
     }
     await sleep(400 + Math.random()*900);
-    await page.evaluate(() => { window.scrollBy(0, 800); });
-    await sleep(400 + Math.random()*900);
+    for (let i = 0; i < 3; i++) { await page.evaluate(() => { window.scrollBy(0, 1000); }); await sleep(400 + Math.random()*900); }
+    try { const count = await page.$$eval(cardsSel, els => els.length); console.log(`SCRAPER cards found=${count}`); } catch {}
     let rows = await extractListings(page);
     const { minBedrooms, maxPrice } = filters || {};
     rows = rows.filter(r => {
@@ -111,7 +120,8 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters }) {
       return true;
     });
     console.log(`SCRAPER extracted=${rows.length}`);
-    return { listings: rows, durationMs: Date.now()-start };
+    const warning = rows.length ? null : 'selectors-empty';
+    return { listings: rows, warning, durationMs: Date.now()-start };
   } catch (err) {
     console.warn('SCRAPER error during runZip:', err?.message || String(err));
     const msg = /captcha|403|blocked/i.test(String(err)) ? 'blocked' : 'error';
@@ -142,16 +152,16 @@ router.post('/run', async (req, res) => {
     const { puppeteer, chromium } = await getPuppeteer();
     const zips = Array.isArray(zipCodes) && zipCodes.length ? zipCodes.slice(0, 2) : ['78704'];
     const all = [];
+    const warnings = [];
     for (const zip of zips) {
       const { listings, warning } = await runZip({ puppeteer, chromium }, { propertyType, zip, filters });
-      if (warning && !listings?.length) {
-        // continue but note warning in logs
-      }
+      if (warning) warnings.push(warning);
       all.push(...(listings || []));
       await sleep(500 + Math.random()*700);
     }
     scraperState = { ...scraperState, isRunning: false, status: 'idle', totalListings: all.length };
-    return res.json({ listings: all, echo: { propertyType, zipCodes: zips, filters }, tookMs: Date.now()-t0 });
+    const warning = all.length ? null : (warnings[0] || null);
+    return res.json({ listings: all, echo: { propertyType, zipCodes: zips, filters }, warning, tookMs: Date.now()-t0 });
   } catch (e) {
     console.warn('SCRAPER fatal error:', e?.message || String(e));
     scraperState = { ...scraperState, isRunning: false, status: 'idle' };
