@@ -528,11 +528,12 @@ router.post('/run', async (req, res) => {
     scraperState = { ...scraperState, isRunning: true, status: 'running', lastRun: new Date().toISOString() };
     console.log('SCRAPER start', { useMode: mode, reason: modeReason, zipCodes, cityQuery, filters });
     // Discovery via Zillow API (GetSearchPageState)
-    if (cityQuery && String(cityQuery).trim()) {
-      const city = String(cityQuery).trim();
-      const { listings, echo } = await discoverListingsApi({ cityQuery: city, maxPages: 3 }, mode === 'rent' ? 'rent' : 'sale');
+    if ((req.body?.srpUrl && String(req.body.srpUrl).trim()) || (cityQuery && String(cityQuery).trim())) {
+      const srpUrl = (req.body?.srpUrl && String(req.body.srpUrl).trim()) || null;
+      const city = (!srpUrl && cityQuery) ? String(cityQuery).trim() : '';
+      const { listings, echo } = await discoverListingsApi({ cityQuery: city || undefined, srpUrl, maxPages: 3 }, mode === 'rent' ? 'rent' : 'sale');
       scraperState = { ...scraperState, isRunning: false, status: 'idle', totalListings: listings.length };
-      return res.json({ listings, echo: { ...echo, filters }, warning: listings.length ? null : 'no-results', tookMs: Date.now()-t0 });
+      return res.json({ listings, echo: { ...echo, srpUrl, filters }, warning: listings.length ? null : 'no-results', tookMs: Date.now()-t0 });
     }
     const zips = Array.isArray(zipCodes) && zipCodes.length ? zipCodes.slice(0, 2) : ['78704'];
     const all = [];

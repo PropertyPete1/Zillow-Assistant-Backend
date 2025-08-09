@@ -55,11 +55,11 @@ function buildCitySlug(city) {
 }
 
 // Network-response capture implementation
-export async function discoverListings({ city, mode = 'rent' }) {
+export async function discoverListings({ city, mode = 'rent', srpUrl = null }) {
   const slug = cityToSlug(city || 'Austin, TX');
-  const srps = mode === 'rent'
+  const srps = srpUrl ? [srpUrl] : (mode === 'rent'
     ? [`https://www.zillow.com/${slug}/rent-houses/`, `https://www.zillow.com/${slug}/rentals/`, `https://www.zillow.com/${slug}/`]
-    : [`https://www.zillow.com/${slug}/homes/`];
+    : [`https://www.zillow.com/${slug}/homes/`] );
 
   // Robust launch with lock and ETXTBSY workaround
   const { default: fs } = await import('node:fs/promises');
@@ -116,7 +116,7 @@ export async function discoverListings({ city, mode = 'rent' }) {
 
     let landed = '';
     for (const srp of srps) {
-      console.log(`DISCOVERY url=${srp}`);
+      console.log(`DISCOVERY url=${srp}${srpUrl ? ' mode=direct-srp' : ''}`);
       await page.goto(srp, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(()=>{});
       await dismissOverlays(page);
       // nudge SRP: scrolls + optional map/list toggle + micro map drag
@@ -142,8 +142,62 @@ export async function discoverListings({ city, mode = 'rent' }) {
       while (Date.now() - start < 8000 && captured.length === 0) {
         await page.evaluate(ms=>new Promise(r=>setTimeout(r,ms)), 300);
       }
-      const loc = await page.evaluate(() => ({ host: location.host, path: location.pathname }));
+      const loc = await page.evaluate(() => ({ host: location.host, path: location.pathname, search: location.search }));
       console.log(`SCRAPER zillow host=${loc.host} path=${loc.path}`);
+      if (srpUrl) {
+        // If a full SRP URL was provided, prefer __NEXT_DATA__ direct extraction first
+        const extracted = await page.evaluate(() => {
+          function safeParse(t){ try { return JSON.parse(t); } catch { return null; } }
+          const el = document.querySelector('#__NEXT_DATA__');
+          if (!el || !el.textContent) return { listings: [], paths: 0 };
+          const j = safeParse(el.textContent);
+          if (!j) return { listings: [], paths: 0 };
+          const found = new Set();
+          const out = [];
+          function push(it){
+            try{
+              const zpid = it?.zpid ?? it?.id ?? it?.hdpData?.homeInfo?.zpid;
+              let url = it?.detailUrl || it?.hdpUrl || it?.url || it?.hdpData?.homeInfo?.hdpUrl;
+              if (url && url.startsWith('/')) url = 'https://www.zillow.com'+url;
+              if (!url || !/zillow\.com\/.*(homedetails|_zpid)/i.test(url)) return;
+              if (found.has(url)) return; found.add(url);
+              const hi = it?.hdpData?.homeInfo || {};
+              const address = it?.address || it?.addressStreet || hi?.streetAddress || it?.statusText || undefined;
+              const price = it?.unformattedPrice ?? it?.price ?? hi?.price;
+              const beds = it?.beds ?? hi?.bedrooms;
+              const baths = it?.baths ?? hi?.bathrooms;
+              const lat = it?.latLong?.latitude ?? hi?.latitude;
+              const lng = it?.latLong?.longitude ?? hi?.longitude;
+              out.push({ zpid, url, address, price, beds, baths, lat, lng });
+            }catch{}
+          }
+          let paths=0;
+          function walk(node, depth){
+            if (!node || depth>8) return;
+            if (Array.isArray(node)){
+              if (node.length && typeof node[0]==='object'){
+                const f=node[0];
+                if ('zpid' in f || /detailurl|hdpurl|url/i.test(Object.keys(f).join(','))){
+                  paths++;
+                  node.slice(0,200).forEach(push);
+                  return;
+                }
+              }
+              return;
+            }
+            if (typeof node==='object'){
+              let i=0; for (const k in node){ if (++i>250) break; walk(node[k], depth+1); }
+            }
+          }
+          walk(j, 0);
+          return { listings: out.slice(0,50), paths };
+        });
+        console.log(`DISCOVERY next_data.paths=${extracted.paths}`);
+        if (extracted?.listings?.length) {
+          console.log(`DISCOVERY listings=${extracted.listings.length}`);
+          return extracted.listings;
+        }
+      }
       if (captured.length) { landed = srp; break; }
     }
 
