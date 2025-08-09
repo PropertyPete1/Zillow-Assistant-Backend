@@ -146,7 +146,16 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
 router.post('/run', async (req, res) => {
   const t0 = Date.now();
   try {
-    let { propertyType = 'rent', zipCodes = [], filters = {}, cityQuery } = req.body || {};
+    let { propertyType, zipCodes = [], filters = {}, cityQuery } = req.body || {};
+    let mode = (typeof propertyType === 'string' && ['rent','sale','both'].includes(propertyType)) ? propertyType : undefined;
+    let modeReason = 'request';
+    if (!mode) {
+      try {
+        const s = await Settings.findOne().sort({ updatedAt: -1 }).lean();
+        if (s?.propertyType) { mode = s.propertyType; modeReason = 'settings'; }
+      } catch {}
+    }
+    if (!mode) { mode = 'rent'; modeReason = 'default'; }
     if (!Array.isArray(zipCodes) || !zipCodes.length) {
       try {
         const s = await Settings.findOne().sort({ updatedAt: -1 }).lean();
@@ -158,28 +167,38 @@ router.post('/run', async (req, res) => {
       return res.status(200).json({ listings: [], echo: { propertyType, zipCodes: [], filters }, warning: 'no-zipcodes', tookMs: Date.now()-t0 });
     }
     scraperState = { ...scraperState, isRunning: true, status: 'running', lastRun: new Date().toISOString() };
-    console.log('SCRAPER start', { propertyType, zipCodes, cityQuery, filters });
+    console.log('SCRAPER start', { useMode: mode, reason: modeReason, zipCodes, cityQuery, filters });
     const { puppeteer, chromium } = await getPuppeteer();
+    if (chromium) { try { const p = await chromium.executablePath(); console.log('SCRAPER chromiumPath=', p); } catch {}
+      try { const ua = (chromium.userAgent || '').slice(0, 40); if (ua) console.log('SCRAPER ua=', ua); } catch {} }
     // Single city mode
     if (cityQuery && String(cityQuery).trim()) {
       const city = String(cityQuery).trim();
-      // Run a single pass with city query
-      const { listings, warning } = await runZip({ puppeteer, chromium }, { propertyType, zip: city, filters, cityQuery: true, buildCityQuery });
-      scraperState = { ...scraperState, isRunning: false, status: 'idle', totalListings: listings.length };
-      return res.json({ listings, echo: { propertyType, zipCodes: [], cityQuery: city, filters }, warning: listings.length ? null : (warning || 'selectors-empty'), tookMs: Date.now()-t0 });
+      if (mode === 'both') {
+        const r1 = await runZip({ puppeteer, chromium }, { propertyType: 'rent', zip: city, filters, cityQuery: true, buildCityQuery });
+        const r2 = await runZip({ puppeteer, chromium }, { propertyType: 'sale', zip: city, filters, cityQuery: true, buildCityQuery });
+        const all = [...(r1.listings||[]), ...(r2.listings||[])];
+        scraperState = { ...scraperState, isRunning: false, status: 'idle', totalListings: all.length };
+        const warning = all.length ? null : (r1.warning || r2.warning || 'selectors-empty');
+        return res.json({ listings: all, echo: { propertyType: mode, zipCodes: [], cityQuery: city, filters }, warning, tookMs: Date.now()-t0 });
+      } else {
+        const { listings, warning } = await runZip({ puppeteer, chromium }, { propertyType: mode, zip: city, filters, cityQuery: true, buildCityQuery });
+        scraperState = { ...scraperState, isRunning: false, status: 'idle', totalListings: listings.length };
+        return res.json({ listings, echo: { propertyType: mode, zipCodes: [], cityQuery: city, filters }, warning: listings.length ? null : (warning || 'selectors-empty'), tookMs: Date.now()-t0 });
+      }
     }
     const zips = Array.isArray(zipCodes) && zipCodes.length ? zipCodes.slice(0, 2) : ['78704'];
     const all = [];
     const warnings = [];
     for (const zip of zips) {
-      const { listings, warning } = await runZip({ puppeteer, chromium }, { propertyType, zip, filters });
+      const { listings, warning } = await runZip({ puppeteer, chromium }, { propertyType: mode, zip, filters });
       if (warning) warnings.push(warning);
       all.push(...(listings || []));
       await sleep(500 + Math.random()*700);
     }
     scraperState = { ...scraperState, isRunning: false, status: 'idle', totalListings: all.length };
     const warning = all.length ? null : (warnings[0] || null);
-    return res.json({ listings: all, echo: { propertyType, zipCodes: zips, filters }, warning, tookMs: Date.now()-t0 });
+    return res.json({ listings: all, echo: { propertyType: mode, zipCodes: zips, cityQuery: '', filters }, warning, tookMs: Date.now()-t0 });
   } catch (e) {
     console.warn('SCRAPER fatal error:', e?.message || String(e));
     scraperState = { ...scraperState, isRunning: false, status: 'idle' };

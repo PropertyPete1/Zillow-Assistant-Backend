@@ -22,8 +22,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Security middleware
-app.use(helmet());
+// CORS first so preflight never hits helmet restrictions
 const parseOriginPatterns = () => {
   // Always allow Vercel previews and common local dev hosts
   const base = ['https://*.vercel.app', 'http://localhost:3000', 'http://localhost:5173'];
@@ -63,6 +62,9 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
+
+// Security middleware
+app.use(helmet());
 
 // Rate limiting
 app.use(rateLimiter);
