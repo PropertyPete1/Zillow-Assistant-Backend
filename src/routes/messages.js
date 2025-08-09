@@ -1,13 +1,15 @@
 import express from 'express';
+import { sendMessage } from '../contact/zillowMessage.js';
 
 const router = express.Router();
 
-// POST /api/message/send { listing }
+// POST /api/message/send { url, message, testMode, skipNoAgents }
 router.post('/send', async (req, res) => {
   try {
-    const { listing } = req.body || {};
-    // TODO: implement real send logic
-    return res.json({ address: listing?.address || 'unknown', status: 'sent', timestamp: new Date().toISOString() });
+    const { url, message, testMode = true, skipNoAgents = true } = req.body || {};
+    if (!url) return res.status(400).json({ error: 'Missing url' });
+    const out = await sendMessage({ url, message, testMode, skipNoAgents });
+    return res.json({ ...out, timestamp: new Date().toISOString() });
   } catch (e) {
     return res.status(500).json({ error: 'Failed to send message', message: e?.message || String(e) });
   }
