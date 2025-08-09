@@ -61,7 +61,32 @@ export async function discoverListings({ city, mode = 'rent' }) {
     ? [`https://www.zillow.com/${slug}/rent-houses/`, `https://www.zillow.com/${slug}/rentals/`, `https://www.zillow.com/${slug}/`]
     : [`https://www.zillow.com/${slug}/homes/`];
 
-  const browser = await launchBrowser();
+  // Robust launch with lock and ETXTBSY workaround
+  const { default: fs } = await import('node:fs/promises');
+  const { default: path } = await import('node:path');
+  let launchLock = Promise.resolve();
+  async function withLaunchLock(fn){ let release; const prev=launchLock; launchLock=new Promise(res=>release=res); await prev; try{ return await fn(); } finally{ release(); } }
+  async function prepareExecutable(execPath){ const tmp=`/tmp/chromium-${Date.now()}-${Math.floor(Math.random()*1e6)}`; await fs.copyFile(execPath, tmp); await fs.chmod(tmp, 0o755); return tmp; }
+
+  const { launchBrowser: baseLaunch } = await import('./chrome.js');
+  const { default: chromium } = await import('@sparticuz/chromium');
+  const { default: puppeteer } = await import('puppeteer-core');
+  const execPath0 = await chromium.executablePath();
+  const browser = await withLaunchLock(async () => {
+    let lastErr;
+    for (let t=1; t<=3; t++) {
+      try {
+        const execPath = await prepareExecutable(execPath0);
+        return await puppeteer.launch({
+          headless: true,
+          executablePath: execPath,
+          args: [...chromium.args, '--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu'],
+          defaultViewport: { width: 1360, height: 900 },
+        });
+      } catch (e) { lastErr = e; await new Promise(r=>setTimeout(r, 1200*t)); }
+    }
+    throw lastErr;
+  });
   const page = await browser.newPage();
   try {
     try { await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'); } catch {}
@@ -93,12 +118,29 @@ export async function discoverListings({ city, mode = 'rent' }) {
     for (const srp of srps) {
       console.log(`DISCOVERY url=${srp}`);
       await page.goto(srp, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(()=>{});
-      await page.evaluate(ms=>new Promise(r=>setTimeout(r,ms)), 1200);
-      await page.evaluate(() => window.scrollTo(0, 600));
+      await dismissOverlays(page);
+      // nudge SRP: scrolls + optional map/list toggle + micro map drag
+      for (let i=0;i<6;i++){ await page.evaluate(()=>window.scrollBy(0,1200)); await page.evaluate(ms=>new Promise(r=>setTimeout(r,ms)), 600 + Math.floor(Math.random()*400)); }
+      try {
+        const listBtn = await page.$('button:has-text("List")'); if (listBtn) { await listBtn.click().catch(()=>{}); await page.evaluate(ms=>new Promise(r=>setTimeout(r,ms)), 900); }
+        const mapBtn = await page.$('button:has-text("Map")'); if (mapBtn) { await mapBtn.click().catch(()=>{}); await page.evaluate(ms=>new Promise(r=>setTimeout(r,ms)), 900); }
+      } catch {}
+      await page.evaluate(() => {
+        const map = document.querySelector('[data-testid*="map"] canvas, [class*="map"] canvas');
+        if (!map) return;
+        const rect = map.getBoundingClientRect();
+        const cx = rect.left + rect.width * 0.6;
+        const cy = rect.top + rect.height * 0.6;
+        const el = document.elementFromPoint(cx, cy);
+        if (!el) return;
+        el.dispatchEvent(new MouseEvent('mousedown', { bubbles:true, clientX: cx, clientY: cy }));
+        el.dispatchEvent(new MouseEvent('mousemove', { bubbles:true, clientX: cx-40, clientY: cy-30 }));
+        el.dispatchEvent(new MouseEvent('mouseup',   { bubbles:true, clientX: cx-40, clientY: cy-30 }));
+      });
       await page.evaluate(ms=>new Promise(r=>setTimeout(r,ms)), 900);
       const start = Date.now();
-      while (Date.now() - start < 5000 && captured.length === 0) {
-        await page.evaluate(ms=>new Promise(r=>setTimeout(r,ms)), 250);
+      while (Date.now() - start < 8000 && captured.length === 0) {
+        await page.evaluate(ms=>new Promise(r=>setTimeout(r,ms)), 300);
       }
       const loc = await page.evaluate(() => ({ host: location.host, path: location.pathname }));
       console.log(`SCRAPER zillow host=${loc.host} path=${loc.path}`);
