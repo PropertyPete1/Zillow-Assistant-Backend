@@ -331,6 +331,9 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     const scrollTimes = 6;
     for (let i = 0; i < scrollTimes; i++) { await page.evaluate(() => { window.scrollBy(0, window.innerHeight); }); await sleep(1200 + Math.floor(Math.random()*600)); }
     // Dump compact __NEXT_DATA__ summary for path discovery
+    let znextRoots = [];
+    let znextPaths = [];
+    let znextSamples = [];
     try {
       const zsum = await page.evaluate(() => {
         function safeParse(txt){ try{return JSON.parse(txt)}catch(_){return null} }
@@ -347,9 +350,12 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
         function walk(node,path,depth){ if(depth>6||!node) return; if(Array.isArray(node)){ if(node.length && typeof node[0]==='object'){ const first=node[0]; const hasDetail=Object.keys(first).some(k=>/detailurl|hdpurl|url/i.test(k)); const hasZpid=('zpid' in first); if(hasDetail||hasZpid){ out.listKeys.push(path); out.samples.push({ path, sample:{ zpid:first?.zpid??null, detailUrl:Object.entries(first).find(([k])=>/detailurl|hdpurl|url/i.test(k))?.[1]??null, address:first?.address??first?.hdpData?.homeInfo?.streetAddress??null, price:first?.price??first?.unformattedPrice??first?.hdpData?.homeInfo?.price??null, keys:Object.keys(first).slice(0,20) }}) } } } else if(typeof node==='object'){ let i=0; for(const k in node){ i++; if(i>100) break; walk(node[k], path?`${path}.${k}`:k, depth+1) } } }
         walk(j,'',0); out.listKeys = Array.from(new Set(out.listKeys)).slice(0,25); out.samples = out.samples.slice(0,5); return out;
       });
-      console.log('ZILLOW_NEXT_DATA_SUMMARY roots=', zsum?.roots||[]);
-      console.log('ZILLOW_NEXT_DATA_LIST_PATHS', zsum?.listKeys||[]);
-      try { console.log('ZILLOW_NEXT_DATA_SAMPLES', JSON.stringify(zsum?.samples||[])); } catch {}
+      znextRoots = zsum?.roots || [];
+      znextPaths = zsum?.listKeys || [];
+      znextSamples = zsum?.samples || [];
+      console.log('ZILLOW_NEXT_DATA_SUMMARY roots=', znextRoots);
+      console.log('ZILLOW_NEXT_DATA_LIST_PATHS', znextPaths);
+      try { console.log('ZILLOW_NEXT_DATA_SAMPLES', JSON.stringify(znextSamples)); } catch {}
     } catch {}
     // JSON-first harvest (collect URLs)
     const jMark = makeTimer();
@@ -586,6 +592,7 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
       jsonCount: jsonCount,
       domCount: jsonCount ? 0 : (Array.isArray(links)?links.length:0),
       candidateCount: Array.isArray(links)?links.length:0,
+      znext: { roots: znextRoots, paths: znextPaths, samples: znextSamples },
     };
     // Patch in measured ddg/json times if available
     try { meta.timings.ddg_ms = ddgT.elapsed(); } catch {}
