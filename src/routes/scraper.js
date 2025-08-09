@@ -14,7 +14,10 @@ router.post('/run', async (req, res) => {
   try {
     const { propertyType, zipCodes, filters } = req.body || {};
     scraperState = { ...scraperState, isRunning: true, status: 'running', lastRun: new Date().toISOString() };
-    return res.json({ listings: [], status: scraperState, params: { propertyType, zipCodes, filters } });
+    // Log filters for visibility
+    // eslint-disable-next-line no-console
+    console.info('[Scraper] run params', { propertyType, zipCodes, filters });
+    return res.json({ listings: [], status: scraperState, params: { propertyType, zipCodes }, echoFilters: filters });
   } catch (e) {
     return res.status(500).json({ error: 'Failed to start scraper', message: e?.message || String(e) });
   }
