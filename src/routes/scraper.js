@@ -35,28 +35,49 @@ function buildCityQuery(propertyType, cityQuery) {
   return `site:zillow.com "${cityQuery}" ${mode}`;
 }
 
-async function extractListings(page) {
-  const items = await page.evaluate(() => {
+async function extractListings(page, { filters, mode }) {
+  const items = await page.evaluate((args) => {
+    const { filters, mode } = args || {};
+    const CARD_SEL = 'a[data-test="property-card-link"], a.property-card-link, ul.photo-cards li article a[href*="/homedetails/"]';
+    const anchors = Array.from(document.querySelectorAll(CARD_SEL));
     const results = [];
-    const as = Array.from(document.querySelectorAll('a[data-test="property-card-link"], a.property-card-link, article a[href*="/homedetails/"], a[href*="/b/"], a[href*="/homedetails/"]'));
     const seen = new Set();
-    for (const a of as) {
+    for (const a of anchors) {
       try {
         const link = a.href;
         if (!link || seen.has(link)) continue; seen.add(link);
-        const card = a.closest('article, div[data-test="property-card"], li, div');
-        const addrEl = card && (card.querySelector('[data-test="property-card-addr"], [data-test="property-card-address"], address, h2, h3'));
+        const container = a.closest('article, li, div[data-test="property-card"], div');
+        const text = (container?.innerText || '').toLowerCase();
+        let labelMatch = null;
+        if (text.includes('property owner')) labelMatch = 'PROPERTY_OWNER';
+        else if (text.includes('for rent by owner')) labelMatch = 'FRBO';
+        else if (text.includes('for sale by owner')) labelMatch = 'FSBO';
+
+        if (filters && filters.skipNoAgents) {
+          if (!labelMatch) continue;
+        }
+
+        const addrEl = container && (container.querySelector('[data-test="property-card-addr"], [data-test="property-card-address"], address, h2, h3'));
         const address = addrEl ? (addrEl.textContent || '').trim() : ((a.textContent || '').trim());
-        const priceEl = card && (card.querySelector('[data-test="property-card-price"], .PropertyCardWrapper__StyledPrice, [class*="price"]'));
-        const priceText = priceEl ? (priceEl.textContent || '').trim() : '';
-        const bedsEl = card && (card.querySelector('[data-test*="bed-bath"], [class*="bed"]'));
+        const priceEl = container && (container.querySelector('[data-test="property-card-price"], .property-card-data span, .PropertyCardWrapper__StyledPrice, [class*="price"]'));
+        const price = priceEl ? (priceEl.textContent || '').trim() : '';
+        const bedsEl = container && (container.querySelector('[data-test*="bed-bath"], [class*="bed"]'));
         const bedsText = bedsEl ? (bedsEl.textContent || '').trim() : '';
         const bedrooms = parseInt((bedsText.match(/\d+/)||['0'])[0],10)||0;
-        results.push({ address, price: priceText, bedrooms, ownerName: '', link });
+        const ownerEl = container && (container.querySelector('[data-test="listing-provider"], [data-testid="listing-provider"], [data-test="agent-name"], strong, b, span'));
+        const ownerName = ownerEl ? (ownerEl.textContent || '').trim() : '';
+
+        let type = mode;
+        if (mode === 'both') {
+          if (labelMatch === 'FRBO') type = 'rent';
+          else if (labelMatch === 'FSBO') type = 'sale';
+        }
+
+        results.push({ address, price, bedrooms, ownerName, link, type, labelMatch });
       } catch {}
     }
     return results;
-  });
+  }, { filters, mode });
   return items;
 }
 
@@ -107,21 +128,14 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     ]);
     console.log('SCRAPER zillow click ok');
     const cardsSel = 'a[data-test="property-card-link"], a.property-card-link, ul.photo-cards li article a[href*="/homedetails/"]';
-    try {
-      await page.waitForSelector(cardsSel, { timeout: 20000 });
-      console.log('SCRAPER page ready');
-    } catch {
-      console.warn('SCRAPER warn selectors-empty (no cards yet)');
-    }
-    for (let i = 0; i < 3; i++) {
-      await page.evaluate(() => { window.scrollBy(0, window.innerHeight); });
-      await sleep(1500);
-    }
-    try { const count = await page.$$eval(cardsSel, els => els.length); console.log(`SCRAPER cards found=${count}`); } catch {}
-    let rows = await extractListings(page);
-    try { console.log(`SCRAPER cards found(after extract)=${rows.length}`); } catch {}
-    const { minBedrooms, maxPrice } = filters || {};
-    rows = rows.filter(r => {
+    // Scroll 4x with waits
+    for (let i = 0; i < 4; i++) { await page.evaluate(() => { window.scrollBy(0, window.innerHeight); }); await sleep(1200 + Math.floor(Math.random()*600)); }
+    try { await page.waitForFunction((sel) => document.querySelectorAll(sel).length > 0, { timeout: 20000 }, cardsSel); } catch {}
+    try { const pre = await page.$$eval(cardsSel, els => els.length); console.log(`SCRAPER cards found(pre)=${pre}`); } catch {}
+    let rows = await extractListings(page, { filters, mode: propertyType });
+    // Server-side filters & dedupe
+    const { minBedrooms, maxPrice, skipDuplicatePhotos } = filters || {};
+    let filtered = rows.filter(r => {
       if (minBedrooms && r.bedrooms && r.bedrooms < Number(minBedrooms)) return false;
       if (maxPrice) {
         const p = parseInt(String(r.price).replace(/[^0-9]/g, ''), 10) || 0;
@@ -129,9 +143,24 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
       }
       return true;
     });
-    console.log(`SCRAPER extracted=${rows.length}`);
-    const warning = rows.length ? null : 'selectors-empty';
-    return { listings: rows, warning, durationMs: Date.now()-start };
+    const seenKeys = new Set();
+    const deduped = [];
+    for (const r of filtered) {
+      const key = `${(r.address||'').toLowerCase().trim()}|${(r.price||'').replace(/\s+/g,'').toLowerCase()}`;
+      if (skipDuplicatePhotos) {
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+      }
+      deduped.push(r);
+    }
+    // Log kept owner cards
+    for (const it of deduped) {
+      if (filters && filters.skipNoAgents && !it.labelMatch) continue;
+      console.log(`✅ OWNER CARD: ${it.labelMatch || 'UNKNOWN'} | ${it.ownerName || 'Unknown'} | ${it.address || 'No address'} | ${it.price || 'No price'}`);
+    }
+    console.log(`SCRAPER extracted=${deduped.length}`);
+    const warning = deduped.length ? null : (filters && filters.skipNoAgents ? 'owner-cards-empty' : 'selectors-empty');
+    return { listings: deduped, warning, durationMs: Date.now()-start };
   } catch (err) {
     console.warn('SCRAPER error during runZip:', err?.message || String(err));
     const msg = /captcha|403|blocked/i.test(String(err)) ? 'blocked' : 'error';
