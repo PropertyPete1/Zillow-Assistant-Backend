@@ -20,6 +20,51 @@ function makeTimer() {
   };
 }
 
+// JSON helpers for homedetail URL extraction
+function collectHomeDetailStrings(obj, out) {
+  try {
+    if (!obj) return;
+    if (typeof obj === 'string') {
+      if (obj.includes('/homedetails/')) out.add(obj);
+      return;
+    }
+    if (Array.isArray(obj)) {
+      for (const v of obj) collectHomeDetailStrings(v, out);
+      return;
+    }
+    if (typeof obj === 'object') {
+      for (const k in obj) {
+        const v = obj[k];
+        if (k === 'detailUrl' || k === 'canonicalUrl' || k === 'url' || k === 'href') {
+          if (typeof v === 'string' && v.includes('/homedetails/')) out.add(v);
+        }
+        collectHomeDetailStrings(v, out);
+      }
+    }
+  } catch {}
+}
+
+function extractHomeDetailUrlsFromJson(json, origin = 'https://www.zillow.com') {
+  const found = new Set();
+  collectHomeDetailStrings(json, found);
+  const urls = [];
+  for (const raw of found) {
+    try {
+      const href = raw.startsWith('http') ? raw : origin.replace(/\/+$/, '') + (raw.startsWith('/') ? raw : '/' + raw);
+      if (href.includes('/homedetails/')) urls.push(href.split('?')[0]);
+    } catch {}
+  }
+  return Array.from(new Set(urls)).slice(0, 100);
+}
+
+async function doScrolls(page, times = 6, range = [1000, 1800]) {
+  function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+  for (let i = 0; i < times; i++) {
+    await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+    await page.waitForTimeout(rand(range[0], range[1]));
+  }
+}
+
 async function getPuppeteer() {
   try {
     // Try serverless-friendly core first
@@ -154,12 +199,36 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     let jsonLinks = [];
     try {
       jsonLinks = await page.evaluate(() => {
-        const out = new Set();
-        const add = (u) => { try { if (typeof u === 'string' && u.includes('/homedetails/')) out.add(u); } catch {} };
-        const walk = (o) => { if (!o) return; if (typeof o === 'string') add(o); else if (Array.isArray(o)) o.forEach(walk); else if (typeof o === 'object') Object.values(o).forEach(walk); };
-        const scripts = Array.from(document.querySelectorAll('script[type="application/json"], #__NEXT_DATA__'));
-        for (const s of scripts) { try { const txt = s.textContent || ''; const j = JSON.parse(txt); walk(j); } catch {} }
-        return Array.from(out);
+        function safeParse(txt){ try{ return JSON.parse(txt); }catch{return null;} }
+        function collectHomeDetailStrings(obj, out){
+          try{
+            if (!obj) return;
+            if (typeof obj === 'string'){ if (obj.includes('/homedetails/')) out.add(obj); return; }
+            if (Array.isArray(obj)){ for (const v of obj) collectHomeDetailStrings(v, out); return; }
+            if (typeof obj === 'object'){
+              for (const k in obj){
+                const v = obj[k];
+                if ((k === 'detailUrl' || k === 'canonicalUrl' || k === 'url' || k === 'href') && typeof v === 'string' && v.includes('/homedetails/')) out.add(v);
+                collectHomeDetailStrings(v, out);
+              }
+            }
+          }catch(e){}
+        }
+        const found = new Set();
+        const nextEl = document.querySelector('#__NEXT_DATA__');
+        if (nextEl && nextEl.textContent) {
+          const j = safeParse(nextEl.textContent.trim());
+          if (j) collectHomeDetailStrings(j, found);
+        }
+        const scripts = Array.from(document.querySelectorAll('script[type="application/json"]'));
+        for (const s of scripts) {
+          if (!s.textContent) continue;
+          const j = safeParse(s.textContent.trim());
+          if (j) collectHomeDetailStrings(j, found);
+        }
+        const origin = location.origin.replace(/\/+$/,'');
+        const urls = Array.from(found).map(u => (u.startsWith('http') ? u : origin + (u.startsWith('/')?u:'/'+u)).split('?')[0]).filter(u => u.includes('/homedetails/'));
+        return Array.from(new Set(urls)).slice(0, 100);
       });
     } catch (e) { console.warn('PHASE.JSON error', e?.message || String(e)); }
     const jsonCount = Array.isArray(jsonLinks) ? jsonLinks.length : 0;
@@ -173,14 +242,9 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
       // DOM harvest for candidates (fallback)
       const dMark = makeTimer();
       try { await page.waitForFunction((sel) => document.querySelectorAll(sel).length > 0, { timeout: 20000 }, cardsSel); } catch {}
-      let preCount = 0;
-      try { preCount = await page.$$eval(cardsSel, els => els.length); } catch {}
-      console.log(`SCRAPER cards found(pre)=${preCount}`);
+      try { await doScrolls(page, 8, [1000,1800]); } catch {}
       try {
-        links = await page.$$eval(
-          'a[data-test="property-card-link"], a.property-card-link, [data-test="search-list-content"] a[href*="/homedetails/"], ul.photo-cards li article a[href*="/homedetails/"], a[href*="/homedetails/"][tabindex]',
-          els => Array.from(new Set(els.map(a => (a instanceof HTMLAnchorElement ? a.href : a.getAttribute('href'))).filter(Boolean)))
-        );
+        links = await page.$$eval('a[data-test="property-card-link"], a.property-card-link, [data-test="search-list-content"] a[href*="/homedetails/"], ul.photo-cards li article a[href*="/homedetails/"], a[href*="/homedetails/"][tabindex]', els => Array.from(new Set(els.map(a => (a instanceof HTMLAnchorElement ? a.href : a.getAttribute('href'))).filter(Boolean))));
       } catch {}
       // Very last fallback
       try {
