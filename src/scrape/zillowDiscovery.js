@@ -1,14 +1,17 @@
 import chromium from '@sparticuz/chromium';
 import { randomInt } from 'crypto';
+import puppeteerExtra from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { wait } from '../utils/wait.js';
 
 function buildCitySlug(city) {
   return String(city).trim().replace(/\s+/g, '-').replace(/,+/g, '');
 }
 
+puppeteerExtra.use(StealthPlugin());
+
 export async function discoverListings({ city, mode = 'rent' }) {
-  const puppeteer = (await import('puppeteer-core')).default;
-  const browser = await puppeteer.launch({
+  const browser = await puppeteerExtra.launch({
     executablePath: await chromium.executablePath(),
     headless: chromium.headless !== false,
     args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
@@ -16,6 +19,7 @@ export async function discoverListings({ city, mode = 'rent' }) {
   });
   const page = await browser.newPage();
   try {
+    try { await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'); } catch {}
     const slug = buildCitySlug(city || 'Austin, TX');
     const primary = `https://www.zillow.com/${slug}/rent-houses/`;
     const fallback = `https://www.zillow.com/${slug}/rentals/`;

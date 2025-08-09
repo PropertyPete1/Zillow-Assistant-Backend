@@ -6,9 +6,8 @@ import { wait } from '../utils/wait.js';
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
 export async function sendMessage({ url, message, testMode = true, skipNoAgents = true }) {
-  const puppeteer = (await import('puppeteer-core')).default;
-  const extra = puppeteerExtra.use(StealthPlugin());
-  const browser = await extra.launch({
+  puppeteerExtra.use(StealthPlugin());
+  const browser = await puppeteerExtra.launch({
     executablePath: await chromium.executablePath(),
     headless: chromium.headless !== false,
     args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
@@ -16,6 +15,7 @@ export async function sendMessage({ url, message, testMode = true, skipNoAgents 
   });
   const page = await browser.newPage();
   try {
+    try { await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'); } catch {}
     const z = new URL(url);
     const zpidMatch = z.pathname.match(/(\d+)_zpid/);
     const zpid = zpidMatch ? zpidMatch[1] : '';
