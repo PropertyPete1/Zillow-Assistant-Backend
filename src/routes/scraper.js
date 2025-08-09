@@ -1,4 +1,5 @@
 import express from 'express';
+import Settings from '../models/Settings.js';
 
 const router = express.Router();
 
@@ -125,7 +126,17 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters }) {
 router.post('/run', async (req, res) => {
   const t0 = Date.now();
   try {
-    const { propertyType = 'rent', zipCodes = [], filters = {} } = req.body || {};
+    let { propertyType = 'rent', zipCodes = [], filters = {} } = req.body || {};
+    if (!Array.isArray(zipCodes) || !zipCodes.length) {
+      try {
+        const s = await Settings.findOne().sort({ updatedAt: -1 }).lean();
+        if (s?.zipCodes?.length) zipCodes = s.zipCodes;
+      } catch {}
+    }
+    if (!Array.isArray(zipCodes) || !zipCodes.length) {
+      console.warn('SCRAPER warn no-zipcodes');
+      return res.status(200).json({ listings: [], echo: { propertyType, zipCodes: [], filters }, warning: 'no-zipcodes', tookMs: Date.now()-t0 });
+    }
     scraperState = { ...scraperState, isRunning: true, status: 'running', lastRun: new Date().toISOString() };
     console.log('SCRAPER start', { propertyType, zipCodes, filters });
     const { puppeteer, chromium } = await getPuppeteer();
