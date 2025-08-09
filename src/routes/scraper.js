@@ -330,9 +330,61 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     // Scroll 5–6x with waits to trigger lazy load
     const scrollTimes = 6;
     for (let i = 0; i < scrollTimes; i++) { await page.evaluate(() => { window.scrollBy(0, window.innerHeight); }); await sleep(1200 + Math.floor(Math.random()*600)); }
+    // Dump compact __NEXT_DATA__ summary for path discovery
+    try {
+      const zsum = await page.evaluate(() => {
+        function safeParse(txt){ try{return JSON.parse(txt)}catch(_){return null} }
+        const out = { roots: [], listKeys: [], samples: [] };
+        const next = document.querySelector('#__NEXT_DATA__');
+        if (!next || !next.textContent) return out;
+        const j = safeParse(next.textContent);
+        if (!j) return out;
+        const roots = [
+          'props','pageProps','query','buildId','assetPrefix',
+          'props.pageProps','props.pageProps.searchPageState','props.pageProps.initialReduxState',
+        ];
+        out.roots = roots.filter(p=>{ const segs=p.split('.'); let cur=j; for(const s of segs){ cur=cur?.[s]; if(!cur) return false } return true });
+        function walk(node,path,depth){ if(depth>6||!node) return; if(Array.isArray(node)){ if(node.length && typeof node[0]==='object'){ const first=node[0]; const hasDetail=Object.keys(first).some(k=>/detailurl|hdpurl|url/i.test(k)); const hasZpid=('zpid' in first); if(hasDetail||hasZpid){ out.listKeys.push(path); out.samples.push({ path, sample:{ zpid:first?.zpid??null, detailUrl:Object.entries(first).find(([k])=>/detailurl|hdpurl|url/i.test(k))?.[1]??null, address:first?.address??first?.hdpData?.homeInfo?.streetAddress??null, price:first?.price??first?.unformattedPrice??first?.hdpData?.homeInfo?.price??null, keys:Object.keys(first).slice(0,20) }}) } } } else if(typeof node==='object'){ let i=0; for(const k in node){ i++; if(i>100) break; walk(node[k], path?`${path}.${k}`:k, depth+1) } } }
+        walk(j,'',0); out.listKeys = Array.from(new Set(out.listKeys)).slice(0,25); out.samples = out.samples.slice(0,5); return out;
+      });
+      console.log('ZILLOW_NEXT_DATA_SUMMARY roots=', zsum?.roots||[]);
+      console.log('ZILLOW_NEXT_DATA_LIST_PATHS', zsum?.listKeys||[]);
+      try { console.log('ZILLOW_NEXT_DATA_SAMPLES', JSON.stringify(zsum?.samples||[])); } catch {}
+    } catch {}
     // JSON-first harvest (collect URLs)
     const jMark = makeTimer();
     let jsonLinks = [];
+    // Try path-based links first from common paths
+    try {
+      const pathLinks = await page.evaluate(() => {
+        function safeParse(txt){ try{return JSON.parse(txt)}catch(_){return null} }
+        function get(obj,path){ const segs=path.split('.'); let cur=obj; for(const s of segs){ cur=cur?.[s]; if(!cur) return null } return cur }
+        const next = document.querySelector('#__NEXT_DATA__'); if(!next||!next.textContent) return [];
+        const j = safeParse(next.textContent); if(!j) return [];
+        const candidates = [
+          'props.pageProps.searchPageState.cat1.searchResults.listResults',
+          'props.pageProps.initialReduxState.searchPageState.cat1.searchResults.listResults',
+          'props.pageProps.searchPageState.cat1.searchResults.mapResults',
+        ];
+        const links = new Set();
+        for (const p of candidates) {
+          const arr = get(j, p);
+          if (Array.isArray(arr)) {
+            for (const it of arr.slice(0,200)) {
+              if (it && typeof it==='object') {
+                const href = it.detailUrl || it.hdpUrl || it.url;
+                if (href && typeof href==='string') {
+                  const abs = href.startsWith('http') ? href : (location.origin.replace(/\/+$/,'') + (href.startsWith('/')?href:'/'+href));
+                  if (abs.includes('/homedetails/')) links.add(abs.split('?')[0]);
+                }
+              }
+            }
+          }
+        }
+        return Array.from(links).slice(0,100);
+      });
+      if (Array.isArray(pathLinks) && pathLinks.length) { jsonLinks = pathLinks; }
+    } catch {}
     try {
       jsonLinks = await page.evaluate(() => {
         function safeParse(txt){ try{ return JSON.parse(txt); }catch{return null;} }
