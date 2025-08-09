@@ -65,6 +65,84 @@ async function doScrolls(page, times = 6, range = [1000, 1800]) {
   }
 }
 
+// DuckDuckGo HTML endpoint parsing (no JS)
+function extractZillowLinksFromDDGHtml(html) {
+  const links = [];
+  const re = /<a[^>]+href="([^"]+)"[^>]*>(.*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    try {
+      const href = m[1];
+      const url = new URL(href, 'https://html.duckduckgo.com');
+      if (!/zillow\.com/i.test(url.hostname)) continue;
+      const u = url.href;
+      if (u.includes('/y.js') || u.includes('/aclick')) continue;
+      links.push(u);
+    } catch {}
+  }
+  const uniq = Array.from(new Set(links));
+  const homedetails = uniq.filter(u => /\/homedetails\//i.test(u));
+  const homes = uniq.filter(u => /\/homes\//i.test(u));
+  return homedetails.concat(homes).slice(0, 10);
+}
+
+async function ddgHtmlTry(page, query) {
+  const url = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query);
+  console.log(`PHASE.DDG_HTML q="${query}"`);
+  const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => null);
+  if (!resp) return [];
+  const html = await page.content();
+  const links = extractZillowLinksFromDDGHtml(html);
+  console.log(`PHASE.DDG_HTML links=${links.length}`);
+  return links;
+}
+
+async function ddgNormalTry(page, query) {
+  console.log(`PHASE.DDG_NORMAL q="${query}"`);
+  await page.goto('https://duckduckgo.com/?q=' + encodeURIComponent(query), { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+  try { await page.waitForTimeout(1000); } catch {}
+  const selectors = ['#links a.result__a', 'a[data-testid="result-title-a"]'];
+  const links = await page.evaluate((sels) => {
+    const urls = new Set();
+    for (const sel of sels) {
+      document.querySelectorAll(sel).forEach(a => {
+        const href = a && a.href || '';
+        try {
+          const u = new URL(href, location.origin).href;
+          const host = new URL(u).hostname;
+          if (/zillow\.com/i.test(host)) urls.add(u);
+        } catch {}
+      });
+    }
+    return Array.from(urls);
+  }, selectors).catch(() => []);
+  console.log(`PHASE.DDG_NORMAL links=${links.length}`);
+  return links;
+}
+
+async function getZillowLandingUrl(page, queries, cityOrZip) {
+  // Try HTML endpoint first
+  for (let i = 0; i < queries.length; i++) {
+    const list = await ddgHtmlTry(page, queries[i]);
+    if (list.length) {
+      console.log(`SCRAPER ddg html click="${list[0]}"`);
+      return list[0];
+    }
+  }
+  // Then normal ddg.com
+  for (let i = 0; i < queries.length; i++) {
+    const list = await ddgNormalTry(page, queries[i]);
+    if (list.length) {
+      console.log(`SCRAPER ddg normal click="${list[0]}"`);
+      return list[0];
+    }
+  }
+  // Fallback direct Zillow city/zip browse
+  const fallback = `https://www.zillow.com/homes/${encodeURIComponent(String(cityOrZip).replace(/\s+/g, '-'))}_rb/`;
+  console.log(`SCRAPER ddg fallback="${fallback}"`);
+  return fallback;
+}
+
 async function getPuppeteer() {
   try {
     // Try serverless-friendly core first
@@ -161,28 +239,26 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     await page.setUserAgent(`Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${Math.floor(120+Math.random()*5)}.0.0.0 Safari/537.36`);
     await page.setViewport({ width: 1200 + Math.floor(Math.random()*200), height: 900 + Math.floor(Math.random()*200) });
 
-    const query = cityQuery && buildCityQuery ? buildCityQuery(propertyType, zip) : buildQuery(propertyType, zip);
     const ddgT = makeTimer();
-    console.log(`PHASE.DDG try=1 q="${query}"`);
-    await page.goto('https://duckduckgo.com/', { timeout: 25000, waitUntil: 'networkidle2' });
-    await sleep(300 + Math.random()*700);
-    await page.type('input[name="q"]', query, { delay: 50 + Math.random()*40 });
-    await Promise.all([
-      page.keyboard.press('Enter'),
-      page.waitForNavigation({ timeout: 25000, waitUntil: 'networkidle2' })
-    ]);
-    await sleep(300 + Math.random()*700);
-    const linkHandle = await page.$('a.result__a[href*="zillow.com"]') || await page.$('a[href*="zillow.com/"]');
-    if (!linkHandle) {
-      console.warn('WARN ddg-no-zillow-result');
-      totalT.mark('TOTAL done');
-      return { listings: [], warning: 'ddg-no-zillow-result', durationMs: Date.now()-start, meta: { timings: { ddg_ms: ddgT.elapsed(), json_ms: 0, dom_ms: 0, detail_ms: 0, total_ms: totalT.elapsed() }, jsonCount: 0, domCount: 0, candidateCount: 0 } };
+    const cityOrZip = String(zip).replace(/,/g, '');
+    const queries = [];
+    if (propertyType === 'rent') {
+      queries.push(cityQuery && buildCityQuery ? buildCityQuery('rent', cityOrZip) : buildQuery('rent', cityOrZip));
+      queries.push(`site:zillow.com ${cityOrZip} frbo`);
+      queries.push(`site:zillow.com/homedetails ${cityOrZip} for rent by owner`);
+    } else if (propertyType === 'sale') {
+      queries.push(cityQuery && buildCityQuery ? buildCityQuery('sale', cityOrZip) : buildQuery('sale', cityOrZip));
+      queries.push(`site:zillow.com ${cityOrZip} fsbo`);
+      queries.push(`site:zillow.com/homedetails ${cityOrZip} for sale by owner`);
+    } else {
+      queries.push(cityQuery && buildCityQuery ? buildCityQuery('rent', cityOrZip) : buildQuery('rent', cityOrZip));
+      queries.push(cityQuery && buildCityQuery ? buildCityQuery('sale', cityOrZip) : buildQuery('sale', cityOrZip));
+      queries.push(`site:zillow.com/homedetails ${cityOrZip}`);
     }
-    const ddgClickPromise = linkHandle.click({ delay: 50 + Math.random()*50 });
-    await Promise.all([
-      page.waitForNavigation({ timeout: 30000, waitUntil: 'networkidle2' }),
-      ddgClickPromise,
-    ]);
+
+    const landing = await getZillowLandingUrl(page, queries, cityOrZip);
+    try { await page.goto(landing, { waitUntil: 'domcontentloaded', timeout: 45000 }); } catch {}
+    try { await page.waitForTimeout(1500); } catch {}
     ddgT.mark('DDG done');
     console.log('SCRAPER zillow navigation complete');
     // Safety delay for client-side routing to settle
