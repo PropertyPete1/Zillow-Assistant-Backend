@@ -1,6 +1,6 @@
 import express from 'express';
 import Settings from '../models/Settings.js';
-import { discoverListings } from '../scrape/zillowDiscovery.js';
+import { discoverListingsApi } from '../scrape/zillowApiDiscovery.js';
 
 const router = express.Router();
 
@@ -527,21 +527,21 @@ router.post('/run', async (req, res) => {
     }
     scraperState = { ...scraperState, isRunning: true, status: 'running', lastRun: new Date().toISOString() };
     console.log('SCRAPER start', { useMode: mode, reason: modeReason, zipCodes, cityQuery, filters });
-    // Discovery via direct Zillow SRP (__NEXT_DATA__) JSON-first
+    // Discovery via Zillow API (GetSearchPageState)
     if (cityQuery && String(cityQuery).trim()) {
       const city = String(cityQuery).trim();
-      const listings = await discoverListings({ city, mode });
+      const { listings, echo } = await discoverListingsApi({ cityQuery: city, maxPages: 3 }, mode === 'rent' ? 'rent' : 'sale');
       scraperState = { ...scraperState, isRunning: false, status: 'idle', totalListings: listings.length };
-      return res.json({ listings, echo: { propertyType: mode, zipCodes: [], cityQuery: city, filters }, warning: listings.length ? null : 'selectors-empty', tookMs: Date.now()-t0 });
+      return res.json({ listings, echo: { ...echo, filters }, warning: listings.length ? null : 'no-results', tookMs: Date.now()-t0 });
     }
     const zips = Array.isArray(zipCodes) && zipCodes.length ? zipCodes.slice(0, 2) : ['78704'];
     const all = [];
     const warnings = [];
     for (const zip of zips) {
       const city = String(zip).trim();
-      const list = await discoverListings({ city, mode });
-      all.push(...list);
-      await sleep(400 + Math.random()*500);
+      const { listings } = await discoverListingsApi({ cityQuery: city, maxPages: 2 }, mode === 'rent' ? 'rent' : 'sale');
+      all.push(...(listings||[]));
+      await sleep(200 + Math.random()*400);
     }
     scraperState = { ...scraperState, isRunning: false, status: 'idle', totalListings: all.length };
     const warning = all.length ? null : (warnings[0] || null);
