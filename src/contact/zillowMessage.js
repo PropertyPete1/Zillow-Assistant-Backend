@@ -1,6 +1,7 @@
 import chromium from '@sparticuz/chromium';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import puppeteerExtra from 'puppeteer-extra';
+import { wait } from '../utils/wait.js';
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
@@ -20,7 +21,7 @@ export async function sendMessage({ url, message, testMode = true, skipNoAgents 
     const zpid = zpidMatch ? zpidMatch[1] : '';
     const q = zpid ? `site:zillow.com ${zpid} _zpid` : `site:zillow.com/homedetails ${z.pathname.split('/').slice(-2,-1)[0]}`;
     await page.goto('https://duckduckgo.com/?q=' + encodeURIComponent(q), { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(()=>{});
-    await sleep(700);
+    await wait(700);
     // Click first matching Zillow result hosting the same zpid/path
     const candidate = await page.evaluate((wantPath) => {
       const as = Array.from(document.querySelectorAll('a[href*="zillow.com"]'));
@@ -31,13 +32,13 @@ export async function sendMessage({ url, message, testMode = true, skipNoAgents 
     }, zpid ? `${zpid}_zpid` : z.pathname.replace(/\/$/, ''));
     const target = candidate || url;
     await page.goto(target, { waitUntil: 'networkidle2', timeout: 45000 }).catch(()=>{});
-    await sleep(1000 + Math.floor(Math.random()*400));
+    await wait(1000 + Math.floor(Math.random()*400));
     // Dismiss overlays
     try {
       const sels = [
         'button:has-text("Accept")','button:has-text("I agree")','button[aria-label*="accept"]','[data-test="privacy-accept"]','button[aria-label*="close"]','[data-test="close"]','[data-testid="close"]'
       ];
-      for (const sel of sels) { const el = await page.$(sel); if (el) { await el.click({ delay: 20 }).catch(()=>{}); await page.waitForTimeout(200); } }
+      for (const sel of sels) { const el = await page.$(sel); if (el) { await el.click({ delay: 20 }).catch(()=>{}); await wait(200); } }
     } catch {}
     const bodyRaw = await page.evaluate(() => document.body?.innerText || '');
     const body = bodyRaw.toLowerCase();

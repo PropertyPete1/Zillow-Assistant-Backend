@@ -1,5 +1,6 @@
 import chromium from '@sparticuz/chromium';
 import { randomInt } from 'crypto';
+import { wait } from '../utils/wait.js';
 
 function buildCitySlug(city) {
   return String(city).trim().replace(/\s+/g, '-').replace(/,+/g, '');
@@ -39,11 +40,11 @@ export async function discoverListings({ city, mode = 'rent' }) {
       ];
       for (const sel of sels) {
         const el = await page.$(sel);
-        if (el) { await el.click({ delay: 30 }).catch(() => {}); await page.waitForTimeout(250); }
+        if (el) { await el.click({ delay: 30 }).catch(() => {}); await wait(250); }
       }
     } catch {}
 
-    await page.waitForTimeout(800);
+    await wait(800);
 
     const extracted = await page.evaluate(() => {
       function safeParse(t){ try { return JSON.parse(t); } catch { return null; } }
