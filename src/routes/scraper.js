@@ -133,11 +133,15 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
       totalT.mark('TOTAL done');
       return { listings: [], warning: 'ddg-no-zillow-result', durationMs: Date.now()-start, meta: { timings: { ddg_ms: ddgT.elapsed(), json_ms: 0, dom_ms: 0, detail_ms: 0, total_ms: totalT.elapsed() }, jsonCount: 0, domCount: 0, candidateCount: 0 } };
     }
+    const ddgClickPromise = linkHandle.click({ delay: 50 + Math.random()*50 });
     await Promise.all([
-      linkHandle.click({ delay: 50 + Math.random()*50 }),
-      page.waitForNavigation({ timeout: 30000, waitUntil: 'networkidle2' })
+      page.waitForNavigation({ timeout: 30000, waitUntil: 'networkidle2' }),
+      ddgClickPromise,
     ]);
     ddgT.mark('DDG done');
+    console.log('SCRAPER zillow navigation complete');
+    // Safety delay for client-side routing to settle
+    try { await page.waitForTimeout(1500); } catch {}
     console.log('SCRAPER zillow click ok');
     try { const loc = await page.evaluate(() => ({ host: location.host, path: location.pathname })); console.log(`SCRAPER zillow host=${loc.host} path=${loc.path}`); } catch {}
     totalT.mark('Zillow landing');
@@ -145,40 +149,48 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     // Scroll 5–6x with waits to trigger lazy load
     const scrollTimes = 6;
     for (let i = 0; i < scrollTimes; i++) { await page.evaluate(() => { window.scrollBy(0, window.innerHeight); }); await sleep(1200 + Math.floor(Math.random()*600)); }
-    // JSON harvest (count only)
+    // JSON-first harvest (collect URLs)
     const jMark = makeTimer();
-    let jsonCount = 0;
+    let jsonLinks = [];
     try {
-      jsonCount = await page.evaluate(() => {
+      jsonLinks = await page.evaluate(() => {
         const out = new Set();
         const add = (u) => { try { if (typeof u === 'string' && u.includes('/homedetails/')) out.add(u); } catch {} };
         const walk = (o) => { if (!o) return; if (typeof o === 'string') add(o); else if (Array.isArray(o)) o.forEach(walk); else if (typeof o === 'object') Object.values(o).forEach(walk); };
         const scripts = Array.from(document.querySelectorAll('script[type="application/json"], #__NEXT_DATA__'));
         for (const s of scripts) { try { const txt = s.textContent || ''; const j = JSON.parse(txt); walk(j); } catch {} }
-        return Array.from(out).length;
+        return Array.from(out);
       });
     } catch (e) { console.warn('PHASE.JSON error', e?.message || String(e)); }
+    const jsonCount = Array.isArray(jsonLinks) ? jsonLinks.length : 0;
     console.log('PHASE.JSON links=', jsonCount);
     jMark.mark('JSON harvest done');
 
-    // DOM harvest for candidates
-    const dMark = makeTimer();
-    try { await page.waitForFunction((sel) => document.querySelectorAll(sel).length > 0, { timeout: 20000 }, cardsSel); } catch {}
-    let preCount = 0;
-    try { preCount = await page.$$eval(cardsSel, els => els.length); } catch {}
-    console.log(`SCRAPER cards found(pre)=${preCount}`);
     let links = [];
-    try {
-      links = await page.$$eval(cardsSel, els => Array.from(new Set(els.map(a => (a instanceof HTMLAnchorElement ? a.href : a.getAttribute('href'))).filter(Boolean))));
-    } catch {}
-    // Fallback: harvest any homedetails links on page if union selector missed
-    try {
-      const more = await page.$$eval('a[href*="/homedetails/"]', els => Array.from(new Set(els.map(a => (a instanceof HTMLAnchorElement ? a.href : a.getAttribute('href'))).filter(Boolean))));
-      links = Array.from(new Set([...(links||[]), ...(more||[])]));
-    } catch {}
-    if (Array.isArray(links)) links = links.slice(0, 30);
-    console.log(`PHASE.DOM links=`, Array.isArray(links)?links.length:0);
-    dMark.mark('DOM harvest done');
+    if (jsonCount) {
+      links = jsonLinks.map(u => u.startsWith('http') ? u : `https://www.zillow.com${u}`);
+    } else {
+      // DOM harvest for candidates (fallback)
+      const dMark = makeTimer();
+      try { await page.waitForFunction((sel) => document.querySelectorAll(sel).length > 0, { timeout: 20000 }, cardsSel); } catch {}
+      let preCount = 0;
+      try { preCount = await page.$$eval(cardsSel, els => els.length); } catch {}
+      console.log(`SCRAPER cards found(pre)=${preCount}`);
+      try {
+        links = await page.$$eval(
+          'a[data-test="property-card-link"], a.property-card-link, [data-test="search-list-content"] a[href*="/homedetails/"], ul.photo-cards li article a[href*="/homedetails/"], a[href*="/homedetails/"][tabindex]',
+          els => Array.from(new Set(els.map(a => (a instanceof HTMLAnchorElement ? a.href : a.getAttribute('href'))).filter(Boolean)))
+        );
+      } catch {}
+      // Very last fallback
+      try {
+        const more = await page.$$eval('a[href*="/homedetails/"]', els => Array.from(new Set(els.map(a => (a instanceof HTMLAnchorElement ? a.href : a.getAttribute('href'))).filter(Boolean))));
+        links = Array.from(new Set([...(links||[]), ...(more||[])]));
+      } catch {}
+      console.log('PHASE.DOM links=', Array.isArray(links)?links.length:0);
+      dMark.mark('DOM harvest done');
+    }
+    if (Array.isArray(links)) links = links.slice(0, 50);
 
     const results = [];
     // Verify owner on detail page sequentially
@@ -186,7 +198,12 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     for (const href of links) {
       try {
         console.log(`DETAIL nav -> ${href}`);
-        try { await page.goto(href, { waitUntil: 'networkidle2', timeout: 60000 }); } catch (e) { console.warn('DETAIL nav error', e?.message || String(e)); continue; }
+        try { await page.goto(href, { waitUntil: 'networkidle2', timeout: 30000 }); } catch (e) {
+          if ((e?.message||'').includes('Execution context was destroyed')) {
+            console.warn('Retrying after context destroyed');
+            try { await page.goto(href, { waitUntil: 'networkidle2', timeout: 30000 }); } catch { continue; }
+          } else { console.warn('DETAIL nav error', e?.message || String(e)); continue; }
+        }
         await sleep(300 + Math.random()*500);
         const ownerCheckT = makeTimer();
         const detail = await page.evaluate(() => {
@@ -258,19 +275,19 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     totalT.mark('TOTAL done');
     const meta = {
       timings: {
-        ddg_ms: 0, // measured above via ddgT, but returned 0 if early; set below
+        ddg_ms: 0,
         json_ms: 0,
-        dom_ms: dMark.elapsed(),
+        dom_ms: 0,
         detail_ms: detMark.elapsed(),
         total_ms: totalT.elapsed(),
       },
-      jsonCount: 0,
-      domCount: Array.isArray(links)?links.length:0,
+      jsonCount: jsonCount,
+      domCount: jsonCount ? 0 : (Array.isArray(links)?links.length:0),
       candidateCount: Array.isArray(links)?links.length:0,
     };
     // Patch in measured ddg/json times if available
     try { meta.timings.ddg_ms = ddgT.elapsed(); } catch {}
-    try { meta.timings.json_ms = jMark.elapsed(); meta.jsonCount = jsonCount; } catch {}
+    try { meta.timings.json_ms = jMark.elapsed(); } catch {}
     const warning = deduped.length ? null : 'owner-cards-empty';
     return { listings: deduped, warning, durationMs: Date.now()-start, meta };
   } catch (err) {
