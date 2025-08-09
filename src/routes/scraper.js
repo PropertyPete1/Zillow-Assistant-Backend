@@ -1,6 +1,6 @@
 import express from 'express';
 import Settings from '../models/Settings.js';
-import { discoverListingsApi } from '../scrape/zillowApiDiscovery.js';
+import { discoverListings } from '../scrape/zillowDiscovery.js';
 
 const router = express.Router();
 
@@ -531,16 +531,18 @@ router.post('/run', async (req, res) => {
     if ((req.body?.srpUrl && String(req.body.srpUrl).trim()) || (cityQuery && String(cityQuery).trim())) {
       const srpUrl = (req.body?.srpUrl && String(req.body.srpUrl).trim()) || null;
       const city = (!srpUrl && cityQuery) ? String(cityQuery).trim() : '';
-      const { listings, echo } = await discoverListingsApi({ cityQuery: city || undefined, srpUrl, maxPages: 3 }, mode === 'rent' ? 'rent' : 'sale');
+      const result = await discoverListings({ city, mode, srpUrl });
+      const listings = Array.isArray(result?.listings) ? result.listings : (Array.isArray(result) ? result : []);
       scraperState = { ...scraperState, isRunning: false, status: 'idle', totalListings: listings.length };
-      return res.json({ listings, echo: { ...echo, srpUrl, filters }, warning: listings.length ? null : 'no-results', tookMs: Date.now()-t0 });
+      return res.json({ listings, echo: { cityQuery: city, srpUrl, mode, filters }, warning: listings.length ? null : 'no-results', tookMs: Date.now()-t0 });
     }
     const zips = Array.isArray(zipCodes) && zipCodes.length ? zipCodes.slice(0, 2) : ['78704'];
     const all = [];
     const warnings = [];
     for (const zip of zips) {
       const city = String(zip).trim();
-      const { listings } = await discoverListingsApi({ cityQuery: city, maxPages: 2 }, mode === 'rent' ? 'rent' : 'sale');
+      const resD = await discoverListings({ city, mode });
+      const listings = Array.isArray(resD?.listings) ? resD.listings : (Array.isArray(resD) ? resD : []);
       all.push(...(listings||[]));
       await sleep(200 + Math.random()*400);
     }
