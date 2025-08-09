@@ -81,6 +81,8 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     }
     browser = await puppeteer.launch(launchOptions);
     const page = await browser.newPage();
+    try { page.setDefaultNavigationTimeout(60000); } catch {}
+    try { page.setDefaultTimeout(60000); } catch {}
     await page.setUserAgent(`Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${Math.floor(120+Math.random()*5)}.0.0.0 Safari/537.36`);
     await page.setViewport({ width: 1200 + Math.floor(Math.random()*200), height: 900 + Math.floor(Math.random()*200) });
 
@@ -106,7 +108,7 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     console.log('SCRAPER zillow click ok');
     const cardsSel = 'a[data-test="property-card-link"], a.property-card-link, ul.photo-cards li article a[href*="/homedetails/"]';
     try {
-      await page.waitForSelector(cardsSel, { timeout: 15000 });
+      await page.waitForSelector(cardsSel, { timeout: 20000 });
       console.log('SCRAPER page ready');
     } catch {
       console.warn('SCRAPER warn selectors-empty (no cards yet)');
