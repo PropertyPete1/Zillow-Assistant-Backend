@@ -224,51 +224,7 @@ function buildCityQuery(propertyType, cityQuery) {
   return `site:zillow.com "${cityQuery}" ${mode}`;
 }
 
-async function extractListings(page, { filters, mode }) {
-  const items = await page.evaluate((args) => {
-    const { filters, mode } = args || {};
-    const CARD_SEL = 'a[data-test="property-card-link"], a.property-card-link, ul.photo-cards li article a[href*="/homedetails/"]';
-    const anchors = Array.from(document.querySelectorAll(CARD_SEL));
-    const results = [];
-    const seen = new Set();
-    for (const a of anchors) {
-      try {
-        const link = a.href;
-        if (!link || seen.has(link)) continue; seen.add(link);
-        const container = a.closest('article, li, div[data-test="property-card"], div');
-        const text = (container?.innerText || '').toLowerCase();
-        let labelMatch = null;
-        if (text.includes('property owner')) labelMatch = 'PROPERTY_OWNER';
-        else if (text.includes('for rent by owner')) labelMatch = 'FRBO';
-        else if (text.includes('for sale by owner')) labelMatch = 'FSBO';
-
-        if (filters && filters.skipNoAgents) {
-          if (!labelMatch) continue;
-        }
-
-        const addrEl = container && (container.querySelector('[data-test="property-card-addr"], [data-test="property-card-address"], address, h2, h3'));
-        const address = addrEl ? (addrEl.textContent || '').trim() : ((a.textContent || '').trim());
-        const priceEl = container && (container.querySelector('[data-test="property-card-price"], .property-card-data span, .PropertyCardWrapper__StyledPrice, [class*="price"]'));
-        const price = priceEl ? (priceEl.textContent || '').trim() : '';
-        const bedsEl = container && (container.querySelector('[data-test*="bed-bath"], [class*="bed"]'));
-        const bedsText = bedsEl ? (bedsEl.textContent || '').trim() : '';
-        const bedrooms = parseInt((bedsText.match(/\d+/)||['0'])[0],10)||0;
-        const ownerEl = container && (container.querySelector('[data-test="listing-provider"], [data-testid="listing-provider"], [data-test="agent-name"], strong, b, span'));
-        const ownerName = ownerEl ? (ownerEl.textContent || '').trim() : '';
-
-        let type = mode;
-        if (mode === 'both') {
-          if (labelMatch === 'FRBO') type = 'rent';
-          else if (labelMatch === 'FSBO') type = 'sale';
-        }
-
-        results.push({ address, price, bedrooms, ownerName, link, type, labelMatch });
-      } catch {}
-    }
-    return results;
-  }, { filters, mode });
-  return items;
-}
+// NOTE: Legacy DOM grid harvest removed. JSON-first only.
 
 async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cityQuery = false, buildCityQuery = null }) {
   const start = Date.now();
@@ -537,7 +493,9 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
           type: type,
           labelMatch: 'PROPERTY_OWNER',
         };
-        console.log(`SCRAPER ✅ OWNER: label=PROPERTY_OWNER | name=${item.ownerName || 'Unknown'} | phone=${item.phone || 'N/A'} | addr=${item.address || 'No address'} | price=${item.price || 'No price'}`);
+        const nm = (item.ownerName || 'Unknown').replace(/\s+/g,' ').trim();
+        console.log(`DETAIL ${href} owner=true name="${nm}"`);
+        console.log(`SCRAPER ✅ OWNER: label=PROPERTY_OWNER | name=${nm} | phone=${item.phone || 'N/A'} | addr=${item.address || 'No address'} | price=${item.price || 'No price'}`);
         results.push(item);
       } catch (e) {
         // continue to next link
