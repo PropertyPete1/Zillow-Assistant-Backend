@@ -37,9 +37,12 @@ async function extractListings(page) {
         const link = a.href;
         if (!link || seen.has(link)) continue; seen.add(link);
         const card = a.closest('article, div[data-test="property-card"], li, div');
-        const address = (card?.querySelector('[data-test="property-card-addr"], [data-test="property-card-address"], address, h2, h3') as any)?.textContent?.trim?.() || a.textContent?.trim?.() || '';
-        const priceText = (card?.querySelector('[data-test="property-card-price"], .PropertyCardWrapper__StyledPrice, [class*="price"]') as any)?.textContent?.trim?.() || '';
-        const bedsText = (card?.querySelector('[data-test*="bed-bath"], [class*="bed"]') as any)?.textContent?.trim?.() || '';
+        const addrEl = card && (card.querySelector('[data-test="property-card-addr"], [data-test="property-card-address"], address, h2, h3'));
+        const address = addrEl ? (addrEl.textContent || '').trim() : ((a.textContent || '').trim());
+        const priceEl = card && (card.querySelector('[data-test="property-card-price"], .PropertyCardWrapper__StyledPrice, [class*="price"]'));
+        const priceText = priceEl ? (priceEl.textContent || '').trim() : '';
+        const bedsEl = card && (card.querySelector('[data-test*="bed-bath"], [class*="bed"]'));
+        const bedsText = bedsEl ? (bedsEl.textContent || '').trim() : '';
         const bedrooms = parseInt((bedsText.match(/\d+/)||['0'])[0],10)||0;
         results.push({ address, price: priceText, bedrooms, ownerName: '', link });
       } catch {}
