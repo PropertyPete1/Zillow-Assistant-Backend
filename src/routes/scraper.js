@@ -128,15 +128,72 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     ]);
     console.log('SCRAPER zillow click ok');
     const cardsSel = 'a[data-test="property-card-link"], a.property-card-link, ul.photo-cards li article a[href*="/homedetails/"]';
-    // Scroll 4x with waits
-    for (let i = 0; i < 4; i++) { await page.evaluate(() => { window.scrollBy(0, window.innerHeight); }); await sleep(1200 + Math.floor(Math.random()*600)); }
+    // Scroll 4–6x with waits
+    const scrollTimes = 5;
+    for (let i = 0; i < scrollTimes; i++) { await page.evaluate(() => { window.scrollBy(0, window.innerHeight); }); await sleep(1200 + Math.floor(Math.random()*600)); }
     try { await page.waitForFunction((sel) => document.querySelectorAll(sel).length > 0, { timeout: 20000 }, cardsSel); } catch {}
-    try { const pre = await page.$$eval(cardsSel, els => els.length); console.log(`SCRAPER cards found(pre)=${pre}`); } catch {}
-    let rows = await extractListings(page, { filters, mode: propertyType });
-    // Server-side filters & dedupe
+    let preCount = 0;
+    try { preCount = await page.$$eval(cardsSel, els => els.length); } catch {}
+    console.log(`SCRAPER cards found(pre)=${preCount}`);
+
+    // Collect candidate links (up to 30)
+    let links = [];
+    try {
+      links = await page.$$eval(cardsSel, els => Array.from(new Set(els.map(a => (a instanceof HTMLAnchorElement ? a.href : a.getAttribute('href'))).filter(Boolean))));
+    } catch {}
+    if (Array.isArray(links)) links = links.slice(0, 30);
+
+    const results = [];
+    // Verify owner on detail page sequentially
+    for (const href of links) {
+      try {
+        await page.goto(href, { waitUntil: 'networkidle2', timeout: 60000 });
+        await sleep(300 + Math.random()*500);
+        const detail = await page.evaluate(() => {
+          const bodyText = (document.body?.innerText || '').toLowerCase();
+          const ownerBadge = /listed by property owner/i.test(document.body?.innerText || '');
+          // Try to pull name/phone near provider sections
+          const provider = document.querySelector('[data-test="listing-provider"], [data-testid="listing-provider"], [data-test="provider-label"]');
+          const providerText = (provider?.innerText || '').trim();
+          const phoneMatch = (document.body?.innerText || '').match(/\b\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/);
+          const addrEl = document.querySelector('[data-test="bdp-address"], [data-test="home-details-summary"] address, h1');
+          const priceEl = document.querySelector('[data-test="price"], [data-testid="price"], [data-test="property-card-price"]');
+          const addr = addrEl ? (addrEl.textContent || '').trim() : '';
+          const price = priceEl ? (priceEl.textContent || '').trim() : '';
+          return { ownerBadge, providerText, phone: phoneMatch ? phoneMatch[0] : '', address: addr, price };
+        });
+        if (!detail.ownerBadge) continue;
+        // Determine type when both
+        let type = propertyType;
+        if (propertyType === 'both') {
+          const t = await page.evaluate(() => {
+            const txt = (document.body?.innerText || '').toLowerCase();
+            if (/for rent/.test(txt)) return 'rent';
+            if (/for sale/.test(txt)) return 'sale';
+            return '';
+          });
+          if (t) type = t;
+        }
+
+        const item = {
+          address: detail.address || '',
+          price: detail.price || '',
+          ownerName: detail.providerText || '',
+          phone: detail.phone || '',
+          link: href,
+          type: type,
+          labelMatch: 'PROPERTY_OWNER',
+        };
+        console.log(`SCRAPER ✅ OWNER: label=PROPERTY_OWNER | name=${item.ownerName || 'Unknown'} | phone=${item.phone || 'N/A'} | addr=${item.address || 'No address'} | price=${item.price || 'No price'}`);
+        results.push(item);
+      } catch (e) {
+        // continue to next link
+      }
+    }
+
+    // Apply filters & dedupe
     const { minBedrooms, maxPrice, skipDuplicatePhotos } = filters || {};
-    let filtered = rows.filter(r => {
-      if (minBedrooms && r.bedrooms && r.bedrooms < Number(minBedrooms)) return false;
+    let filtered = results.filter(r => {
       if (maxPrice) {
         const p = parseInt(String(r.price).replace(/[^0-9]/g, ''), 10) || 0;
         if (p && p > Number(maxPrice)) return false;
@@ -146,20 +203,16 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     const seenKeys = new Set();
     const deduped = [];
     for (const r of filtered) {
-      const key = `${(r.address||'').toLowerCase().trim()}|${(r.price||'').replace(/\s+/g,'').toLowerCase()}`;
+      const key = `${(r.link||'').toLowerCase().trim()}|${(r.address||'').toLowerCase().trim()}|${(r.price||'').replace(/\s+/g,'').toLowerCase()}`;
       if (skipDuplicatePhotos) {
         if (seenKeys.has(key)) continue;
         seenKeys.add(key);
       }
       deduped.push(r);
     }
-    // Log kept owner cards
-    for (const it of deduped) {
-      if (filters && filters.skipNoAgents && !it.labelMatch) continue;
-      console.log(`✅ OWNER CARD: ${it.labelMatch || 'UNKNOWN'} | ${it.ownerName || 'Unknown'} | ${it.address || 'No address'} | ${it.price || 'No price'}`);
-    }
+
     console.log(`SCRAPER extracted=${deduped.length}`);
-    const warning = deduped.length ? null : (filters && filters.skipNoAgents ? 'owner-cards-empty' : 'selectors-empty');
+    const warning = deduped.length ? null : 'owner-cards-empty';
     return { listings: deduped, warning, durationMs: Date.now()-start };
   } catch (err) {
     console.warn('SCRAPER error during runZip:', err?.message || String(err));
