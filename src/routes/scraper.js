@@ -12,14 +12,16 @@ let scraperState = {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function getPuppeteer() {
-  const useCore = process.env.RENDER || process.env.CHROMIUM_PATH || process.env.AWS_LAMBDA_FUNCTION_VERSION;
-  if (useCore) {
-    const { default: puppeteer } = await import('puppeteer-core');
+  try {
+    // Try serverless-friendly core first
+    const { default: puppeteerCore } = await import('puppeteer-core');
     const chromium = (await import('@sparticuz/chromium')).default;
-    return { puppeteer, chromium };
+    return { puppeteer: puppeteerCore, chromium };
+  } catch {
+    // Fallback to bundled puppeteer
+    const { default: puppeteer } = await import('puppeteer');
+    return { puppeteer, chromium: null };
   }
-  const { default: puppeteer } = await import('puppeteer');
-  return { puppeteer, chromium: null };
 }
 
 function buildQuery(propertyType, zip) {
@@ -64,10 +66,7 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters }) {
       const execPath = await chromium.executablePath();
       Object.assign(launchOptions, { executablePath: execPath, defaultViewport: chromium.defaultViewport });
     }
-    const StealthPlugin = (await import('puppeteer-extra-plugin-stealth')).default;
-    const puppeteerExtra = (await import('puppeteer-extra')).default;
-    puppeteerExtra.use(StealthPlugin());
-    browser = await puppeteerExtra.launch(launchOptions);
+    browser = await puppeteer.launch(launchOptions);
     const page = await browser.newPage();
     await page.setUserAgent(`Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${Math.floor(120+Math.random()*5)}.0.0.0 Safari/537.36`);
     await page.setViewport({ width: 1200 + Math.floor(Math.random()*200), height: 900 + Math.floor(Math.random()*200) });
