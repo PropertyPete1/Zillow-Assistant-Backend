@@ -62,7 +62,7 @@ export async function sendMessage({ url, message, testMode = true, skipNoAgents 
     try { const el = await page.$(selMessage); if (el) { await el.click(); await page.type(selMessage, String(message||'Hello!'), { delay: 20 }); } } catch {}
     // Best-effort submit
     const selSubmit = 'button[type=submit], button:has-text("Send"), [role=button]:has-text("Send")';
-    try { const btn = await page.$(selSubmit); if (btn) { await btn.click({ delay: 20 }); await page.waitForTimeout(1200); } } catch {}
+    try { const btn = await page.$(selSubmit); if (btn) { await btn.click({ delay: 20 }); await page.evaluate(ms=>new Promise(r=>setTimeout(r,ms)), 1200); } } catch {}
     return { ok: true, owner: isOwner, ownerName };
   } finally {
     try { await page.close(); } catch {}

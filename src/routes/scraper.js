@@ -62,7 +62,7 @@ async function doScrolls(page, times = 6, range = [1000, 1800]) {
   function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
   for (let i = 0; i < times; i++) {
     await page.evaluate(() => window.scrollBy(0, window.innerHeight));
-    await page.waitForTimeout(rand(range[0], range[1]));
+    await page.evaluate((ms)=>new Promise(r=>setTimeout(r,ms)), rand(range[0], range[1]));
   }
 }
 
@@ -80,7 +80,7 @@ async function zillowDismissOverlays(page) {
   for (const sel of sels) {
     try {
       const el = await page.$(sel);
-      if (el) { await el.click({ delay: 50 }); await page.waitForTimeout(400); }
+    if (el) { await el.click({ delay: 50 }); await page.evaluate(ms=>new Promise(r=>setTimeout(r,ms)), 400); }
     } catch {}
   }
 }
@@ -153,7 +153,7 @@ async function ddgHtmlTry(page, query) {
 async function ddgNormalTry(page, query) {
   console.log(`PHASE.DDG_NORMAL q="${query}"`);
   await page.goto('https://duckduckgo.com/?q=' + encodeURIComponent(query), { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
-  try { await page.waitForTimeout(1000); } catch {}
+  try { await page.evaluate(ms=>new Promise(r=>setTimeout(r,ms)), 1000); } catch {}
   const selectors = ['#links a.result__a', 'a[data-testid="result-title-a"]'];
   const links = await page.evaluate((sels) => {
     const urls = new Set();
@@ -271,11 +271,11 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
 
     const landing = await getZillowLandingUrl(page, queries, cityOrZip);
     try { await page.goto(landing, { waitUntil: 'domcontentloaded', timeout: 45000 }); } catch {}
-    try { await page.waitForTimeout(1500); } catch {}
+    try { await page.evaluate(ms=>new Promise(r=>setTimeout(r,ms)), 1500); } catch {}
     ddgT.mark('DDG done');
     console.log('SCRAPER zillow navigation complete');
     // Safety delay for client-side routing to settle
-    try { await page.waitForTimeout(1500); } catch {}
+    try { await page.evaluate(ms=>new Promise(r=>setTimeout(r,ms)), 1500); } catch {}
     try { await zillowDismissOverlays(page); console.log('SCRAPER overlays dismissed'); } catch {}
     // No grid clicks; avoid DOM-based flows
     try { const loc = await page.evaluate(() => ({ host: location.host, path: location.pathname })); console.log(`SCRAPER zillow host=${loc.host} path=${loc.path}`); } catch {}
