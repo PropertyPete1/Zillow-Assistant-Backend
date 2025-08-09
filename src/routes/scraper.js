@@ -30,6 +30,11 @@ function buildQuery(propertyType, zip) {
   return `site:zillow.com ${zip} ${mode}`;
 }
 
+function buildCityQuery(propertyType, cityQuery) {
+  const mode = propertyType === 'rent' ? 'for rent by owner' : propertyType === 'sale' ? 'for sale by owner' : 'for rent by owner';
+  return `site:zillow.com "${cityQuery}" ${mode}`;
+}
+
 async function extractListings(page) {
   const items = await page.evaluate(() => {
     const results = [];
@@ -55,7 +60,7 @@ async function extractListings(page) {
   return items;
 }
 
-async function runZip({ puppeteer, chromium }, { propertyType, zip, filters }) {
+async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cityQuery = false, buildCityQuery = null }) {
   const start = Date.now();
   // eslint-disable-next-line no-console
   console.log(`SCRAPER start propertyType=${propertyType} zip=${zip}`);
@@ -79,7 +84,7 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters }) {
     await page.setUserAgent(`Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${Math.floor(120+Math.random()*5)}.0.0.0 Safari/537.36`);
     await page.setViewport({ width: 1200 + Math.floor(Math.random()*200), height: 900 + Math.floor(Math.random()*200) });
 
-    const query = buildQuery(propertyType, zip);
+    const query = cityQuery && buildCityQuery ? buildCityQuery(propertyType, zip) : buildQuery(propertyType, zip);
     console.log(`SCRAPER ddg query="${query}"`);
     await page.goto('https://duckduckgo.com/', { timeout: 25000, waitUntil: 'networkidle2' });
     await sleep(300 + Math.random()*700);
@@ -136,20 +141,28 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters }) {
 router.post('/run', async (req, res) => {
   const t0 = Date.now();
   try {
-    let { propertyType = 'rent', zipCodes = [], filters = {} } = req.body || {};
+    let { propertyType = 'rent', zipCodes = [], filters = {}, cityQuery } = req.body || {};
     if (!Array.isArray(zipCodes) || !zipCodes.length) {
       try {
         const s = await Settings.findOne().sort({ updatedAt: -1 }).lean();
         if (s?.zipCodes?.length) zipCodes = s.zipCodes;
       } catch {}
     }
-    if (!Array.isArray(zipCodes) || !zipCodes.length) {
+    if (!cityQuery && (!Array.isArray(zipCodes) || !zipCodes.length)) {
       console.warn('SCRAPER warn no-zipcodes');
       return res.status(200).json({ listings: [], echo: { propertyType, zipCodes: [], filters }, warning: 'no-zipcodes', tookMs: Date.now()-t0 });
     }
     scraperState = { ...scraperState, isRunning: true, status: 'running', lastRun: new Date().toISOString() };
-    console.log('SCRAPER start', { propertyType, zipCodes, filters });
+    console.log('SCRAPER start', { propertyType, zipCodes, cityQuery, filters });
     const { puppeteer, chromium } = await getPuppeteer();
+    // Single city mode
+    if (cityQuery && String(cityQuery).trim()) {
+      const city = String(cityQuery).trim();
+      // Run a single pass with city query
+      const { listings, warning } = await runZip({ puppeteer, chromium }, { propertyType, zip: city, filters, cityQuery: true, buildCityQuery });
+      scraperState = { ...scraperState, isRunning: false, status: 'idle', totalListings: listings.length };
+      return res.json({ listings, echo: { propertyType, zipCodes: [], cityQuery: city, filters }, warning: listings.length ? null : (warning || 'selectors-empty'), tookMs: Date.now()-t0 });
+    }
     const zips = Array.isArray(zipCodes) && zipCodes.length ? zipCodes.slice(0, 2) : ['78704'];
     const all = [];
     const warnings = [];
