@@ -25,10 +25,15 @@ const PORT = process.env.PORT || 3001;
 // Security middleware
 app.use(helmet());
 const parseOriginPatterns = () => {
-  const raw = (process.env.CORS_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean);
-  if (raw.length) return raw;
-  if (process.env.NODE_ENV === 'production') return ['https://*.vercel.app'];
-  return ['http://localhost:3000', 'http://localhost:5173'];
+  // Always allow Vercel previews and common local dev hosts
+  const base = ['https://*.vercel.app', 'http://localhost:3000', 'http://localhost:5173'];
+  const envList = (process.env.CORS_ORIGIN || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  // De-dupe while preserving order
+  const set = new Set([...envList, ...base]);
+  return Array.from(set);
 };
 
 const originPatterns = parseOriginPatterns();
@@ -52,7 +57,8 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  optionsSuccessStatus: 204,
 };
 
 app.use(cors(corsOptions));
