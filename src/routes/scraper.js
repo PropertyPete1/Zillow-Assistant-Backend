@@ -293,14 +293,18 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     try {
       const zsum = await page.evaluate(() => {
         function safeParse(txt){ try{return JSON.parse(txt)}catch(_){return null} }
+        function gp(obj, path){ return path.split('.').reduce((o,k)=>o?.[k], obj); }
         const out = { roots: [], listKeys: [], samples: [] };
         const next = document.querySelector('#__NEXT_DATA__');
         if (!next || !next.textContent) return out;
         const j = safeParse(next.textContent);
         if (!j) return out;
         const roots = [
-          'props','pageProps','query','buildId','assetPrefix',
-          'props.pageProps','props.pageProps.searchPageState','props.pageProps.initialReduxState',
+          'props',
+          'props.pageProps',
+          'props.pageProps.searchPageState',
+          'props.pageProps.initialReduxState',
+          'props.pageProps.componentProps',
         ];
         out.roots = roots.filter(p=>{ const segs=p.split('.'); let cur=j; for(const s of segs){ cur=cur?.[s]; if(!cur) return false } return true });
         function walk(node,path,depth){ if(depth>6||!node) return; if(Array.isArray(node)){ if(node.length && typeof node[0]==='object'){ const first=node[0]; const hasDetail=Object.keys(first).some(k=>/detailurl|hdpurl|url/i.test(k)); const hasZpid=('zpid' in first); if(hasDetail||hasZpid){ out.listKeys.push(path); out.samples.push({ path, sample:{ zpid:first?.zpid??null, detailUrl:Object.entries(first).find(([k])=>/detailurl|hdpurl|url/i.test(k))?.[1]??null, address:first?.address??first?.hdpData?.homeInfo?.streetAddress??null, price:first?.price??first?.unformattedPrice??first?.hdpData?.homeInfo?.price??null, keys:Object.keys(first).slice(0,20) }}) } } } else if(typeof node==='object'){ let i=0; for(const k in node){ i++; if(i>100) break; walk(node[k], path?`${path}.${k}`:k, depth+1) } } }
@@ -459,6 +463,7 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
         const detail = await page.evaluate(() => {
           const bodyText = (document.body?.innerText || '').toLowerCase();
           const ownerBadge = /listed by property owner/i.test(document.body?.innerText || '');
+          const rented = /off market|rented|leased/i.test(bodyText);
           // Try to pull name/phone near provider sections
           const provider = document.querySelector('[data-test="listing-provider"], [data-testid="listing-provider"], [data-test="provider-label"]');
           const providerText = (provider?.innerText || '').trim();
@@ -467,11 +472,13 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
           const priceEl = document.querySelector('[data-test="price"], [data-testid="price"], [data-test="property-card-price"]');
           const addr = addrEl ? (addrEl.textContent || '').trim() : '';
           const price = priceEl ? (priceEl.textContent || '').trim() : '';
-          return { ownerBadge, providerText, phone: phoneMatch ? phoneMatch[0] : '', address: addr, price };
+          return { ownerBadge, rented, providerText, phone: phoneMatch ? phoneMatch[0] : '', address: addr, price };
         });
         console.log(`DETAIL ownerCheck ${detail.ownerBadge ? 'YES' : 'NO'}`);
         ownerCheckT.mark('done');
+        // Apply filters: skipNoAgents and skipAlreadyRented
         if (!detail.ownerBadge) continue;
+        if ((filters && filters.skipAlreadyRented) && detail.rented) continue;
         // Determine type when both
         let type = propertyType;
         if (propertyType === 'both') {
@@ -491,6 +498,7 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
           phone: detail.phone || '',
           link: href,
           type: type,
+          bedrooms: null,
           labelMatch: 'PROPERTY_OWNER',
         };
         const nm = (item.ownerName || 'Unknown').replace(/\s+/g,' ').trim();
