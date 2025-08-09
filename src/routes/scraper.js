@@ -128,8 +128,8 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     ]);
     console.log('SCRAPER zillow click ok');
     const cardsSel = 'a[data-test="property-card-link"], a.property-card-link, ul.photo-cards li article a[href*="/homedetails/"]';
-    // Scroll 4–6x with waits
-    const scrollTimes = 5;
+    // Scroll 5–6x with waits to trigger lazy load
+    const scrollTimes = 6;
     for (let i = 0; i < scrollTimes; i++) { await page.evaluate(() => { window.scrollBy(0, window.innerHeight); }); await sleep(1200 + Math.floor(Math.random()*600)); }
     try { await page.waitForFunction((sel) => document.querySelectorAll(sel).length > 0, { timeout: 20000 }, cardsSel); } catch {}
     let preCount = 0;
@@ -141,7 +141,13 @@ async function runZip({ puppeteer, chromium }, { propertyType, zip, filters, cit
     try {
       links = await page.$$eval(cardsSel, els => Array.from(new Set(els.map(a => (a instanceof HTMLAnchorElement ? a.href : a.getAttribute('href'))).filter(Boolean))));
     } catch {}
+    // Fallback: harvest any homedetails links on page if union selector missed
+    try {
+      const more = await page.$$eval('a[href*="/homedetails/"]', els => Array.from(new Set(els.map(a => (a instanceof HTMLAnchorElement ? a.href : a.getAttribute('href'))).filter(Boolean))));
+      links = Array.from(new Set([...(links||[]), ...(more||[])]));
+    } catch {}
     if (Array.isArray(links)) links = links.slice(0, 30);
+    console.log(`SCRAPER grid candidates=${Array.isArray(links)?links.length:0}`);
 
     const results = [];
     // Verify owner on detail page sequentially
