@@ -6,7 +6,9 @@ import mongoose from 'mongoose';
 
 // Import routes
 import authRoutes from './routes/auth.js';
-import scraperRoutes from './routes/scraper.js';
+// Legacy scraper removed from public API to avoid 403/CAPTCHA flows
+// import scraperRoutes from './routes/scraper.js';
+import leadsRoutes from './routes/leads.js';
 import messagesRoutes from './routes/messages.js';
 import analyticsRoutes from './routes/analytics.js';
 import settingsRoutes from './routes/settings.js';
@@ -91,7 +93,8 @@ app.get('/health', (req, res) => {
 
 // API routes
 app.use('/api/auth', authRoutes);
-app.use('/api/scraper', scraperRoutes);
+// app.use('/api/scraper', scraperRoutes);
+app.use('/api/leads', leadsRoutes);
 app.use('/api/messages', messagesRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/settings', settingsRoutes);
