@@ -136,3 +136,22 @@ router.get('/metrics', async (req, res) => {
     return res.status(500).json({ error: 'failed', message: e?.message || String(e) });
   }
 });
+
+// Read-only peek for admin verification
+router.get('/peek', async (req, res) => {
+  try {
+    const col = getLeadsCollection();
+    if (!col) return res.status(503).json({ error: 'db_unavailable' });
+    const key = (req.query.key || '').toString();
+    if (!process.env.ADMIN_READ_KEY || key !== process.env.ADMIN_READ_KEY) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    const n = Math.min(200, Math.max(1, parseInt((req.query.limit || '50').toString(), 10) || 50));
+    const q = {};
+    if (req.query.status) q.status = req.query.status;
+    const docs = await col.find(q).sort({ _id: -1 }).limit(n).toArray();
+    return res.json(docs);
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || 'failed' });
+  }
+});
