@@ -4,6 +4,28 @@ import mongoose from 'mongoose';
 
 const router = express.Router();
 
+// Minimal Google Sheets append via Apps Script Web App (optional)
+async function appendSentRow(row) {
+  try {
+    if (process.env.SENT_SYNC_ENABLED !== 'true') return;
+    const webapp = process.env.APPS_SCRIPT_WEBAPP_URL;
+    if (!webapp) return;
+    const gfetch = globalThis.fetch || (await import('node-fetch')).default;
+    const r = await gfetch(webapp, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rows: [row] })
+    });
+    if (!r.ok) {
+      // eslint-disable-next-line no-console
+      console.warn('[leads] sheets webapp non-200', r.status);
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[leads] appendSentRow error', e?.message || e);
+  }
+}
+
 function makeHash(input) {
   return crypto.createHash('sha256').update(input).digest('hex');
 }
@@ -75,6 +97,31 @@ router.post('/mark', async (req, res) => {
       },
       { upsert: true }
     );
+
+    // Optional: append to Google Sheets when marked sent
+    if (status === 'sent') {
+      const row = {
+        timestamp: new Date().toISOString(),
+        url,
+        address: address || '',
+        city: '',
+        state: '',
+        zip: '',
+        price: price || '',
+        beds: '',
+        baths: '',
+        sqft: '',
+        frbo_detected: '',
+        detection_reason: '',
+        source: 'extension',
+        status: 'sent',
+        last_action_at: nowIso,
+        notes: notes || reason || '',
+        owner_name: '',
+        hash,
+      };
+      appendSentRow(row).catch(() => {});
+    }
     return res.json({ ok: true });
   } catch (e) {
     return res.status(500).json({ error: 'failed', message: e?.message || String(e) });
@@ -114,44 +161,3 @@ router.post('/ingest', async (req, res) => {
 export default router;
 
 
-
-// Metrics for frontend
-router.get('/metrics', async (req, res) => {
-  try {
-    const col = getLeadsCollection();
-    if (!col) return res.status(503).json({ error: 'db_unavailable' });
-    const queued = await col.countDocuments({ status: 'queued' });
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    const sentToday = await col.countDocuments({ status: 'sent', last_action_at: { $gte: start.toISOString() } });
-    return res.json({
-      queued,
-      sentToday,
-      defaultCaps: {
-        perHour: Number(process.env.DEFAULT_CAP_HOUR || 25),
-        perDay: Number(process.env.DEFAULT_CAP_DAY || 75),
-      },
-    });
-  } catch (e) {
-    return res.status(500).json({ error: 'failed', message: e?.message || String(e) });
-  }
-});
-
-// Read-only peek for admin verification
-router.get('/peek', async (req, res) => {
-  try {
-    const col = getLeadsCollection();
-    if (!col) return res.status(503).json({ error: 'db_unavailable' });
-    const key = (req.query.key || '').toString();
-    if (!process.env.ADMIN_READ_KEY || key !== process.env.ADMIN_READ_KEY) {
-      return res.status(401).json({ error: 'unauthorized' });
-    }
-    const n = Math.min(200, Math.max(1, parseInt((req.query.limit || '50').toString(), 10) || 50));
-    const q = {};
-    if (req.query.status) q.status = req.query.status;
-    const docs = await col.find(q).sort({ _id: -1 }).limit(n).toArray();
-    return res.json(docs);
-  } catch (e) {
-    return res.status(500).json({ error: e?.message || 'failed' });
-  }
-});
