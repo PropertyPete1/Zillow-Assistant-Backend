@@ -91,6 +91,17 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Alias for extension/frontend compatibility
+app.get('/api/leads/health', (req, res) => {
+  res.status(200).json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || 'development',
+    dbConnected: isDbConnected,
+  });
+});
+
 // API routes
 app.use('/api/auth', authRoutes);
 // app.use('/api/scraper', scraperRoutes);
