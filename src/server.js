@@ -27,7 +27,13 @@ const PORT = process.env.PORT || 3001;
 // CORS first so preflight never hits helmet restrictions
 const parseOriginPatterns = () => {
   // Always allow Vercel previews and common local dev hosts
-  const base = ['https://*.vercel.app', 'http://localhost:3000', 'http://localhost:5173', 'chrome-extension://*'];
+  const base = [
+    'https://*.vercel.app',
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'chrome-extension://*',
+    'https://*.zillow.com'
+  ];
   const envList = (process.env.CORS_ORIGIN || '')
     .split(',')
     .map(s => s.trim())
