@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
+import crypto from 'crypto';
 
 // Import routes
 import authRoutes from './routes/auth.js';
@@ -80,6 +81,42 @@ app.use(rateLimiter);
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Lightweight request logging (logfmt) with request ID, duration and bytes
+const logfmtEscape = (value) => {
+  if (value === undefined || value === null) return '""';
+  const s = String(value);
+  return /[\s"=]/.test(s) ? '"' + s.replace(/"/g, '\\"') + '"' : s;
+};
+app.use((req, res, next) => {
+  const startNs = process.hrtime.bigint();
+  const forwarded = req.headers['x-forwarded-for'] || '';
+  const clientIP = String(forwarded).split(',')[0].trim() || req.socket.remoteAddress || '';
+  const userAgent = req.headers['user-agent'] || '';
+  const requestID = req.headers['x-request-id']
+    || (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(8).toString('hex'));
+  res.setHeader('X-Request-ID', requestID);
+
+  let responseBytes = 0;
+  const origWrite = res.write.bind(res);
+  const origEnd = res.end.bind(res);
+  res.write = (chunk, ...args) => {
+    if (chunk) responseBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+    return origWrite(chunk, ...args);
+  };
+  res.end = (chunk, ...args) => {
+    if (chunk) responseBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+    return origEnd(chunk, ...args);
+  };
+
+  res.on('finish', () => {
+    const durationMs = Number((process.hrtime.bigint() - startNs) / BigInt(1_000_000));
+    const nowIso = new Date().toISOString();
+    const line = `${nowIso} clientIP=${logfmtEscape(clientIP)} requestID=${logfmtEscape(requestID)} method=${req.method} path=${logfmtEscape(req.originalUrl || req.url)} status=${res.statusCode} responseTimeMS=${durationMs} responseBytes=${responseBytes} userAgent=${logfmtEscape(userAgent)}`;
+    console.log(line);
+  });
+  next();
+});
 
 let isDbConnected = false;
 mongoose.connection.on('connected', () => { isDbConnected = true; console.log('✅ Mongo connected'); });
