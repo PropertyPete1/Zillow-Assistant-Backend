@@ -114,3 +114,25 @@ router.post('/ingest', async (req, res) => {
 export default router;
 
 
+
+// Metrics for frontend
+router.get('/metrics', async (req, res) => {
+  try {
+    const col = getLeadsCollection();
+    if (!col) return res.status(503).json({ error: 'db_unavailable' });
+    const queued = await col.countDocuments({ status: 'queued' });
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const sentToday = await col.countDocuments({ status: 'sent', last_action_at: { $gte: start.toISOString() } });
+    return res.json({
+      queued,
+      sentToday,
+      defaultCaps: {
+        perHour: Number(process.env.DEFAULT_CAP_HOUR || 25),
+        perDay: Number(process.env.DEFAULT_CAP_DAY || 75),
+      },
+    });
+  } catch (e) {
+    return res.status(500).json({ error: 'failed', message: e?.message || String(e) });
+  }
+});
