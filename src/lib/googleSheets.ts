@@ -13,7 +13,7 @@ function getAuth() {
   });
 }
 
-export async function appendToSheets(rows: any[][]) {
+export async function appendToSheets(rows: any[][], range = 'OwnerOnly!A1') {
   const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
   if (!spreadsheetId) return false;
   const auth = getAuth();
@@ -21,7 +21,7 @@ export async function appendToSheets(rows: any[][]) {
   const sheets = google.sheets({ version: 'v4', auth });
   await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range: 'OwnerOnly!A1',
+    range,
     valueInputOption: 'RAW',
     requestBody: { values: rows },
   });
@@ -44,6 +44,23 @@ export function toSheetRows(listings: Listing[], status: 'KEPT' | 'DROPPED'): an
     l.excludeReason ?? '',
     (l.sourceSignals as any)?.mgmtKeywords?.join('|') ?? (l.sourceSignals as any)?.hasMgmtKeywords?.join('|') ?? '',
     l.sourceSignals?.domMarkers?.join('|') ?? '',
+  ]);
+}
+
+export function messageSheetRows(payloads: Array<{
+  listingId: string; listingUrl: string; address?: string; ownerName?: string;
+  messageText: string; status: string; reason?: string;
+}>): any[][] {
+  const now = new Date().toISOString();
+  return payloads.map(p => [
+    now,
+    p.status,
+    p.listingId,
+    p.listingUrl,
+    p.address ?? '',
+    p.ownerName ?? '',
+    p.messageText,
+    p.reason ?? ''
   ]);
 }
 
