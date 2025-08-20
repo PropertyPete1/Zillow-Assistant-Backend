@@ -16,7 +16,14 @@ const Q = z.object({
 });
 
 router.post('/start', async (req: Request, res: Response) => {
-  const parsed = Q.safeParse(req.body ?? {});
+  // Accept ownersOnly via body or query, and alias propertyOwner as ownersOnly
+  const ownersOnly = Boolean(req.body?.ownersOnly)
+    || Boolean(req.body?.propertyOwner)
+    || Boolean((req.query as any)?.ownersOnly)
+    || Boolean((req.query as any)?.propertyOwner);
+
+  const body = { ...req.body, ownersOnly };
+  const parsed = Q.safeParse(body ?? {});
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
   const result = await scrapeZillow(parsed.data);
@@ -41,7 +48,7 @@ router.post('/start', async (req: Request, res: Response) => {
     }
   } catch {}
 
-  res.json(result);
+  res.json({ ...result, counts: { included: result.included.length, excluded: result.excluded.length } });
 });
 
 export default router;
