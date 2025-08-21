@@ -8,7 +8,7 @@ export async function scrapeZillow(filters: ScrapeFilters): Promise<ScrapeResult
   const ownersOnly = filters.ownersOnly !== false; // default true
   const browser = await puppeteer.launch({
     headless: true,
-    executablePath: typeof (puppeteer as any).executablePath === 'function' ? (puppeteer as any).executablePath() : undefined,
+    executablePath: (puppeteer as any).executablePath?.(),
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
